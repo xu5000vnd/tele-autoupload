@@ -1,0 +1,135 @@
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { appConfig } from '@shared/config/env';
+import { MediaService } from '@shared/services/media.service';
+import { TelegramGateway } from '@shared/telegram/telegram-gateway';
+import { PrismaService } from '@shared/db/prisma.service';
+import { IncomingMessage } from '@shared/types/telegram';
+import { logger } from '@shared/utils/logger';
+import { UserTuStatus } from '@prisma/client';
+
+@Injectable()
+export class IngestorService implements OnModuleInit, OnModuleDestroy {
+  private reconnecting = false;
+  private logger = new Logger(IngestorService.name);
+
+  constructor(
+    private readonly telegramGateway: TelegramGateway,
+    private readonly mediaService: MediaService,
+    private readonly prisma: PrismaService,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.telegramGateway.connect();
+    this.telegramGateway.onNewMessage(async (msg) => this.handleIncoming(msg));
+    this.telegramGateway.onEditedMessage(async (msg) => this.handleIncoming(msg));
+    logger.info('ingestor started');
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.telegramGateway.disconnect();
+  }
+
+  private async handleIncoming(message: IncomingMessage): Promise<void> {
+    this.logger.log('handleIncoming', message);
+    if (!message.senderId && !message.senderUsername) {
+      return;
+    }
+
+    // Match by numeric user ID or by Telegram username (case-insensitive, stored lowercase)
+    const orConditions: object[] = [];
+    if (message.senderId) {
+      orConditions.push({ telegramUserId: message.senderId });
+    }
+    if (message.senderUsername) {
+      orConditions.push({ username: message.senderUsername });
+    }
+
+    const allowedUser = await this.prisma.userTu.findFirst({
+      where: {
+        telegramChatId: message.chatId,
+        status: UserTuStatus.active,
+        OR: orConditions,
+      },
+    });
+
+    if (!allowedUser) {
+      logger.info(
+        { senderId: message.senderId?.toString(), senderUsername: message.senderUsername, chatId: message.chatId.toString() },
+        'message from unregistered or inactive user — skipped',
+      );
+      return;
+    }
+
+    // If the record was matched by username but the stored telegram_user_id doesn't match
+    // the actual sender, back-fill it so future lookups use the faster numeric ID.
+    if (
+      message.senderId &&
+      allowedUser.telegramUserId !== message.senderId
+    ) {
+      await this.prisma.userTu.update({
+        where: { id: allowedUser.id },
+        data: {
+          telegramUserId: message.senderId,
+          updatedAt: new Date(),
+        },
+      });
+      logger.info(
+        { userTuId: allowedUser.id, oldId: allowedUser.telegramUserId.toString(), newId: message.senderId.toString() },
+        'back-filled telegram_user_id from username match',
+      );
+    }
+
+    try {
+      await this.mediaService.processIncomingMessage(message);
+    } catch (error) {
+      logger.error({ err: error, chatId: message.chatId.toString(), messageId: message.messageId.toString() }, 'failed to process incoming message');
+    }
+  }
+
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async reconcile(): Promise<void> {
+    const intervalMs = appConfig.reconciliationIntervalMin * 60_000;
+    const now = Date.now();
+
+    const activeGroups = await this.prisma.groupState.findMany({ where: { isActive: true } });
+    for (const group of activeGroups) {
+      if (group.lastReconciledAt && now - group.lastReconciledAt.getTime() < intervalMs) {
+        continue;
+      }
+
+      const messages = await this.telegramGateway.fetchHistoryAfter({
+        chatId: group.chatId,
+        afterMessageId: group.lastMessageId,
+      });
+
+      for (const message of messages) {
+        await this.handleIncoming(message);
+      }
+
+      const maxMessageId = messages.reduce<bigint>((acc, item) => (item.messageId > acc ? item.messageId : acc), group.lastMessageId);
+
+      await this.prisma.groupState.update({
+        where: { chatId: group.chatId },
+        data: {
+          lastMessageId: maxMessageId,
+          lastReconciledAt: new Date(),
+        },
+      });
+    }
+  }
+
+  async triggerReconnect(): Promise<void> {
+    if (this.reconnecting) {
+      return;
+    }
+
+    this.reconnecting = true;
+    try {
+      await this.telegramGateway.disconnect();
+      await this.telegramGateway.connect();
+    } finally {
+      this.reconnecting = false;
+    }
+  }
+}

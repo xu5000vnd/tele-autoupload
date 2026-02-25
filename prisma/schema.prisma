@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ChatType {
+  group
+  supergroup
+  channel
+}
+
+enum MediaType {
+  photo
+  video
+  document
+}
+
+enum MediaStatus {
+  queued
+  downloading
+  downloaded
+  uploading
+  uploaded
+  failed
+  skipped
+}
+
+enum UserTuStatus {
+  active
+  inactive
+}
+
+enum JobEventType {
+  queued
+  download_start
+  download_done
+  upload_start
+  upload_done
+  failed
+  retried
+  skipped
+}
+
+model GroupState {
+  chatId            BigInt            @id @map("chat_id")
+  title             String
+  chatType          ChatType          @map("chat_type")
+  lastMessageId     BigInt            @default(0) @map("last_message_id")
+  lastReconciledAt  DateTime?         @map("last_reconciled_at")
+  isActive          Boolean           @default(true) @map("is_active")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime?         @map("updated_at")
+  mediaItems        MediaItem[]
+  dateFolderCaches  DriveDateFolderCache[]
+
+  @@map("group_state")
+}
+
+model MediaItem {
+  id              String         @id @default(uuid())
+  chatId           BigInt         @map("chat_id")
+  messageId        BigInt         @map("message_id")
+  groupedId        BigInt?        @map("grouped_id")
+  mediaIndex       Int            @default(0) @map("media_index")
+  date             DateTime
+  senderId         BigInt?        @map("sender_id")
+  mediaType        MediaType      @map("media_type")
+  mimeType         String?        @map("mime_type")
+  tgFileId         String         @map("tg_file_id")
+  tgFileUniqueId   String?        @map("tg_file_unique_id")
+  fileName         String?        @map("file_name")
+  sha256           String?
+  localPath        String?        @map("local_path")
+  sizeBytes        BigInt?        @map("size_bytes")
+  status           MediaStatus    @default(queued)
+  retryCount       Int            @default(0) @map("retry_count")
+  lastRetryAt      DateTime?      @map("last_retry_at")
+  driveFileId      String?        @map("drive_file_id")
+  driveWebUrl      String?        @map("drive_web_url")
+  error            String?
+  failedAt         DateTime?      @map("failed_at")
+  priority         Int            @default(0)
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime?      @map("updated_at")
+
+  groupState       GroupState     @relation(fields: [chatId], references: [chatId])
+  jobEventLogs     JobEventLog[]
+
+  @@unique([chatId, messageId, tgFileUniqueId])
+  @@unique([chatId, messageId, mediaIndex])
+  @@index([status])
+  @@index([chatId, date])
+  @@index([chatId, messageId])
+  @@map("media_item")
+}
+
+
+model DriveDateFolderCache {
+  id            Int       @id @default(autoincrement())
+  chatId        BigInt    @map("chat_id")
+  datePath      String    @map("date_path")
+  driveFolderId String    @map("drive_folder_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  groupState    GroupState @relation(fields: [chatId], references: [chatId])
+
+  @@unique([chatId, datePath])
+  @@map("drive_date_folder_cache")
+}
+
+
+model JobEventLog {
+  id          Int          @id @default(autoincrement())
+  mediaItemId String       @map("media_item_id")
+  eventType   JobEventType @map("event_type")
+  details     Json?
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  mediaItem   MediaItem    @relation(fields: [mediaItemId], references: [id])
+
+  @@index([mediaItemId, createdAt])
+  @@map("job_event_log")
+}
+
+model UserTu {
+  id               Int          @id @default(autoincrement())
+  tuId             String       @unique @map("tu_id")
+  tuName           String       @map("tu_name")
+  telegramUserId   BigInt       @map("telegram_user_id")
+  telegramChatId   BigInt       @map("telegram_chat_id")
+  username         String?      @map("telegram_username")
+  status           UserTuStatus @default(active)
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime?    @map("updated_at")
+
+  @@unique([telegramUserId, telegramChatId])
+  @@index([telegramUserId, status])
+  @@index([username, telegramChatId])
+  @@map("user_tu")
+}
+

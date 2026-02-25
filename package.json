@@ -1,0 +1,50 @@
+{
+  "name": "tele-autoupload",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram media ingest pipeline with NestJS, BullMQ, Prisma",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start:ingestor": "ts-node apps/ingestor/src/main.ts",
+    "start:uploader": "ts-node apps/worker-uploader/src/main.ts",
+    "start:stats": "ts-node apps/stats-api/src/main.ts",
+    "tg:session": "tsx scripts/generate-session.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "concurrently -n ingestor,uploader,stats -c blue,yellow,cyan \"npm:start:*\""
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-fastify": "^11.0.0",
+    "@nestjs/schedule": "^5.0.1",
+    "@prisma/client": "^6.6.0",
+    "bullmq": "^5.43.0",
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "grammy": "^1.40.0",
+    "ioredis": "^5.4.1",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "telegram": "^2.26.22",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "concurrently": "^9.2.1",
+    "prisma": "^6.6.0",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}

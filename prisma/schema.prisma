@@ -130,6 +130,7 @@ model UserTu {
   id               Int          @id @default(autoincrement())
   tuId             String       @unique @map("tu_id")
   tuName           String       @map("tu_name")
+  path             String?
   telegramUserId   BigInt       @map("telegram_user_id")
   telegramChatId   BigInt       @map("telegram_chat_id")
   username         String?      @map("telegram_username")
@@ -142,4 +143,3 @@ model UserTu {
   @@index([username, telegramChatId])
   @@map("user_tu")
 }
-

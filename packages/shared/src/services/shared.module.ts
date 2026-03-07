@@ -8,6 +8,7 @@ import { DriveApiStrategy } from '@shared/drive/drive-api.strategy';
 import { DriveDesktopStrategy } from '@shared/drive/drive-desktop.strategy';
 import { PlaywrightStrategy } from '@shared/drive/playwright.strategy';
 import { UploaderFactoryService } from '@shared/drive/uploader-factory.service';
+import { TelegramNotifierService } from '@shared/services/telegram-notifier.service';
 
 @Global()
 @Module({
@@ -21,6 +22,7 @@ import { UploaderFactoryService } from '@shared/drive/uploader-factory.service';
     DriveDesktopStrategy,
     PlaywrightStrategy,
     UploaderFactoryService,
+    TelegramNotifierService,
   ],
   exports: [
     PrismaService,
@@ -29,6 +31,7 @@ import { UploaderFactoryService } from '@shared/drive/uploader-factory.service';
     MediaService,
     TelegramGateway,
     UploaderFactoryService,
+    TelegramNotifierService,
   ],
 })
 export class SharedModule {}

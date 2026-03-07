@@ -90,12 +90,12 @@ Only users listed in the `user_tu` table can trigger uploads. Insert a row for e
 
 ```sql
 -- Using numeric user ID (most reliable)
-INSERT INTO user_tu (tu_id, tu_name, telegram_user_id, telegram_chat_id, telegram_username, status)
-VALUES ('user1', 'John Doe', 123456789, -1001234567890, 'john_doe', 'active');
+INSERT INTO user_tu (tu_id, tu_name, path, telegram_user_id, telegram_chat_id, telegram_username, status)
+VALUES ('user1', 'John Doe', 'TU Media General/[123456789] John Doe', 123456789, -1001234567890, 'john_doe', 'active');
 
 -- Using username only (numeric ID will be auto-filled on first message)
-INSERT INTO user_tu (tu_id, tu_name, telegram_user_id, telegram_chat_id, telegram_username, status)
-VALUES ('user2', 'Jane', 0, -1001234567890, 'jane_doe', 'active');
+INSERT INTO user_tu (tu_id, tu_name, path, telegram_user_id, telegram_chat_id, telegram_username, status)
+VALUES ('user2', 'Jane', 'TU Media General/[0] Jane', 0, -1001234567890, 'jane_doe', 'active');
 ```
 
 **How to find IDs:**

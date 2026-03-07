@@ -2,6 +2,7 @@ export interface DestinationInfo {
   chatId: bigint;
   chatTitle: string;
   date: Date;
+  userPath?: string | null;
 }
 
 export interface DestinationRef {

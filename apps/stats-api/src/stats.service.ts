@@ -119,6 +119,7 @@ export class StatsService {
       return {
         tu_id: user.tuId,
         tu_name: user.tuName,
+        path: user.path ?? null,
         telegram_user_id: user.telegramUserId.toString(),
         telegram_username: user.username ?? null,
         telegram_chat_id: user.telegramChatId.toString(),

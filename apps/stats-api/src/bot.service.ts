@@ -76,17 +76,20 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ? (rows[0] as { date: string }).date
       : (dateArg ?? new Date().toISOString().slice(0, 10));
 
-    if (!rows.length) {
-      return `📭 <b>No active users found for ${date}.</b>`;
-    }
-
-    const lines = rows.map((r) => {
-      const row = r as {
+    const activeRows = rows
+      .map((r) => r as {
         tu_name: string;
         telegram_username: string | null;
         media: { image: number; video: number; total: number };
         status_uploaded: { success: number; failed: number };
-      };
+      })
+      .filter((row) => row.media.total > 0);
+
+    if (!activeRows.length) {
+      return `📭 <b>No users uploaded media on ${date}.</b>`;
+    }
+
+    const lines = activeRows.map((row) => {
       const handle = row.telegram_username ? `@${row.telegram_username}` : 'no username';
       return (
         `👤 <b>${row.tu_name}</b> (${handle})\n` +

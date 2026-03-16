@@ -44,17 +44,21 @@ export class MediaService {
     for (const media of message.media) {
       const mediaType = media.type as MediaType;
       const uniqueField = media.uniqueId ?? `idx:${media.mediaIndex}`;
+      const uniqueWhere = {
+        chatId_messageId_tgFileUniqueId: {
+          chatId: message.chatId,
+          messageId: message.messageId,
+          tgFileUniqueId: uniqueField,
+        },
+      };
+      const existedBefore = await this.prisma.mediaItem.findUnique({
+        where: uniqueWhere,
+        select: { id: true },
+      });
 
       const mediaItem = await this.prisma.mediaItem.upsert({
-        where: {
-          chatId_messageId_tgFileUniqueId: {
-            chatId: message.chatId,
-            messageId: message.messageId,
-            tgFileUniqueId: uniqueField,
-          },
-        },
+        where: uniqueWhere,
         update: {
-          status: MediaStatus.queued,
           senderId: message.senderId,
           mimeType: media.mimeType,
           fileName: media.fileName,
@@ -86,8 +90,14 @@ export class MediaService {
 
       // Skip if already downloaded or uploaded (idempotent re-processing)
       if (
-        mediaItem.status === MediaStatus.downloaded ||
-        mediaItem.status === MediaStatus.uploaded
+        existedBefore &&
+        (
+          mediaItem.status === MediaStatus.queued ||
+          mediaItem.status === MediaStatus.downloading ||
+          mediaItem.status === MediaStatus.uploading ||
+          mediaItem.status === MediaStatus.downloaded ||
+          mediaItem.status === MediaStatus.uploaded
+        )
       ) {
         if (mediaItem.localPath && mediaItem.sizeBytes) {
           await this.queueService.enqueueUpload({

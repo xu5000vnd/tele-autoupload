@@ -64,3 +64,25 @@ export function dateFolderPathDdMmYy(date: Date): string {
   const yy = String(date.getFullYear()).slice(-2);
   return `${dd}.${mm}.${yy}`;
 }
+
+export function dateFolderPathDdMmYyBucketed(date: Date, bucketDays = 10): string {
+  const safeBucketDays = Math.max(2, Math.floor(bucketDays));
+  const day = date.getDate();
+  const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+
+  let anchorDay = day < safeBucketDays ? 1 : Math.floor(day / safeBucketDays) * safeBucketDays;
+  if (anchorDay < 1) {
+    anchorDay = 1;
+  }
+
+  // Merge tiny tail buckets into the previous bucket to reduce folder explosion.
+  const tailLength = daysInMonth - anchorDay + 1;
+  if (anchorDay > 1 && tailLength <= safeBucketDays / 2) {
+    anchorDay = Math.max(1, anchorDay - safeBucketDays);
+  }
+
+  const dd = String(anchorDay).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yy = String(date.getFullYear()).slice(-2);
+  return `${dd}.${mm}.${yy}`;
+}

@@ -32,6 +32,17 @@ const baseSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REFRESH_TOKEN: z.string().optional(),
   DRIVE_SYNC_FOLDER: z.string().optional(),
+  UPLOAD_DATE_BUCKET_ENABLED: z.string().default('true').transform((value, ctx) => {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'UPLOAD_DATE_BUCKET_ENABLED must be one of: true/false/1/0/yes/no/on/off',
+    });
+    return z.NEVER;
+  }),
+  UPLOAD_DATE_BUCKET_DAYS: z.coerce.number().int().min(2).max(31).default(10),
   PLAYWRIGHT_PROFILE_DIR: z.string().optional(),
 });
 
@@ -69,6 +80,8 @@ export function parseEnv(): {
     clientSecret?: string;
     refreshToken?: string;
     syncFolder?: string;
+    dateBucketEnabled: boolean;
+    dateBucketDays: number;
     playwrightProfileDir?: string;
   };
 } {
@@ -120,6 +133,8 @@ export function parseEnv(): {
       clientSecret: env.GOOGLE_CLIENT_SECRET,
       refreshToken: env.GOOGLE_REFRESH_TOKEN,
       syncFolder: env.DRIVE_SYNC_FOLDER,
+      dateBucketEnabled: env.UPLOAD_DATE_BUCKET_ENABLED,
+      dateBucketDays: env.UPLOAD_DATE_BUCKET_DAYS,
       playwrightProfileDir: env.PLAYWRIGHT_PROFILE_DIR,
     },
   };

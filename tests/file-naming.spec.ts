@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { makeDeterministicFileName, sanitizeGroupTitle } from '@shared/utils/file-naming';
+import { dateFolderPathDdMmYyBucketed, makeDeterministicFileName, sanitizeGroupTitle } from '@shared/utils/file-naming';
 
 describe('file naming', () => {
   it('sanitizes group title', () => {
@@ -16,5 +16,19 @@ describe('file naming', () => {
     });
 
     expect(name).toBe('20260223_081422__msg12345__photo__0.jpg');
+  });
+
+  it('groups into 10-day bucket folders', () => {
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-01T10:00:00+07:00'), 10)).toBe('01.01.26');
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-05T10:00:00+07:00'), 10)).toBe('01.01.26');
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-12T10:00:00+07:00'), 10)).toBe('10.01.26');
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-17T10:00:00+07:00'), 10)).toBe('10.01.26');
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-25T10:00:00+07:00'), 10)).toBe('20.01.26');
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-30T10:00:00+07:00'), 10)).toBe('20.01.26');
+  });
+
+  it('supports configurable bucket days', () => {
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-11T10:00:00+07:00'), 5)).toBe('10.01.26');
+    expect(dateFolderPathDdMmYyBucketed(new Date('2026-01-31T10:00:00+07:00'), 7)).toBe('28.01.26');
   });
 });

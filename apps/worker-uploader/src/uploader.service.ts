@@ -76,23 +76,18 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
             telegramUserId: item.senderId,
             telegramChatId: item.chatId,
           },
-          select: { path: true, tuName: true },
+          select: { id: true, tuId: true, path: true, tuName: true },
         })
       : null;
 
+    let resolvedUserPath = userTu?.path ?? null;
     if (appConfig.uploadStrategy === 'drive_desktop') {
-      if (!userTu?.path) {
-        throw new Error(`Missing user_tu.path for media item ${item.id}`);
+      if (!userTu) {
+        throw new Error(`Missing user_tu row for media item ${item.id}`);
       }
-
-      const expectedBasePath = path.join(
-        appConfig.drive.syncFolder ?? '',
-        userTu.path.replace(/^[/\\]+/, ''),
-      );
-      try {
-        await fs.access(expectedBasePath, fsConstants.F_OK);
-      } catch {
-        throw new Error(`Path folder not found: ${expectedBasePath}`);
+      resolvedUserPath = await this.resolveDesktopUserPath(userTu);
+      if (!resolvedUserPath) {
+        throw new Error(`Missing user_tu.path for media item ${item.id}`);
       }
     }
 
@@ -100,7 +95,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
       chatId: item.chatId,
       chatTitle,
       date: item.date,
-      userPath: userTu?.path ?? null,
+      userPath: resolvedUserPath,
     });
 
     await this.folderResolverService.rememberDateFolder(item.chatId, item.date, destination.folderId);
@@ -240,5 +235,90 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     const normalizedError = input.error.replace(/\s+/g, ' ').slice(0, 120);
     bucket.errors.set(normalizedError, (bucket.errors.get(normalizedError) ?? 0) + 1);
     this.pendingNotifications.set(key, bucket);
+  }
+
+  private async resolveDesktopUserPath(userTu: {
+    id: number;
+    tuId: string;
+    path: string | null;
+    tuName: string;
+  }): Promise<string | null> {
+    const rawPath = userTu.path?.trim();
+    if (!rawPath) return null;
+
+    const normalizedPath = this.normalizeRelativePath(rawPath);
+    const expectedPath = path.join(appConfig.drive.syncFolder ?? '', normalizedPath);
+    if (await this.pathExists(expectedPath)) {
+      return normalizedPath;
+    }
+
+    const correctedPath = await this.findPathByTuIdFromBaseFolder(normalizedPath, userTu.tuId);
+    if (!correctedPath) {
+      throw new Error(`Path folder not found: ${expectedPath}`);
+    }
+
+    await this.prisma.userTu.update({
+      where: { id: userTu.id },
+      data: {
+        path: correctedPath,
+        updatedAt: new Date(),
+      },
+    });
+
+    logger.warn(
+      { tuId: userTu.tuId, oldPath: normalizedPath, correctedPath },
+      'auto-corrected user_tu.path by tu_id folder match',
+    );
+
+    return correctedPath;
+  }
+
+  private async findPathByTuIdFromBaseFolder(normalizedPath: string, tuId: string): Promise<string | null> {
+    const [baseFolder] = normalizedPath.split('/');
+    if (!baseFolder) return null;
+
+    const baseAbsPath = path.join(appConfig.drive.syncFolder ?? '', baseFolder);
+    if (!(await this.pathExists(baseAbsPath))) {
+      return null;
+    }
+
+    const dirEntries = await fs.readdir(baseAbsPath, { withFileTypes: true });
+    const bracketIdRegex = new RegExp(`\\[\\s*${this.escapeRegex(tuId)}\\s*\\]`, 'i');
+    const matches = dirEntries
+      .filter((entry) => entry.isDirectory() && bracketIdRegex.test(entry.name))
+      .map((entry) => entry.name);
+
+    if (!matches.length) {
+      return null;
+    }
+
+    if (matches.length === 1) {
+      return `${baseFolder}/${matches[0]}`;
+    }
+
+    const exactTag = `[${tuId}]`;
+    const exactMatches = matches.filter((name) => name.includes(exactTag));
+    if (exactMatches.length === 1) {
+      return `${baseFolder}/${exactMatches[0]}`;
+    }
+
+    throw new Error(`Multiple folders matched tu_id=${tuId} under base folder ${baseFolder}`);
+  }
+
+  private normalizeRelativePath(input: string): string {
+    return input.replace(/^[/\\]+/, '').replace(/[\\/]+/g, '/').trim();
+  }
+
+  private escapeRegex(input: string): string {
+    return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private async pathExists(absPath: string): Promise<boolean> {
+    try {
+      await fs.access(absPath, fsConstants.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

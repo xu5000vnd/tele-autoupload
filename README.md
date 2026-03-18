@@ -139,6 +139,8 @@ npm run start:stats
 | `STAGING_DIR` | ✅ | Local directory for downloaded files before upload |
 | `UPLOAD_STRATEGY` | ✅ | `drive_desktop`, `drive_api`, or `playwright` |
 | `DRIVE_SYNC_FOLDER` | ✅ (desktop) | Local path of your Google Drive synced folder |
+| `UPLOAD_DATE_BUCKET_ENABLED` | optional | Enable bucketed date folders for desktop upload (`true`/`false`, default: `true`) |
+| `UPLOAD_DATE_BUCKET_DAYS` | optional | Date bucket size for desktop folder grouping (default: `10`) |
 | `BOT_TOKEN` | optional | Telegram bot token from `@BotFather` |
 | `BOT_REPORT_CHAT_ID` | optional | Chat ID to receive automatic daily summary at 09:00 UTC |
 | `STATS_API_PORT` | optional | Stats API port (default: `3100`) |

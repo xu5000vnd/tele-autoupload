@@ -5,16 +5,19 @@
   "description": "Telegram media ingest pipeline with NestJS, BullMQ, Prisma",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:web": "npm --prefix apps/web-admin run build",
     "start:ingestor": "ts-node apps/ingestor/src/main.ts",
     "start:uploader": "ts-node apps/worker-uploader/src/main.ts",
     "start:stats": "ts-node apps/stats-api/src/main.ts",
+    "start:web": "npm --prefix apps/web-admin run dev",
     "tg:session": "tsx scripts/generate-session.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev": "concurrently -n ingestor,uploader,stats -c blue,yellow,cyan \"npm:start:*\""
+    "dev": "concurrently -n ingestor,uploader,stats -c blue,yellow,cyan \"npm:start:*\"",
+    "dev:all": "concurrently -n ingestor,uploader,stats,web -c blue,yellow,cyan,green \"npm:start:*\" \"npm run start:web\""
   },
   "engines": {
     "node": ">=22.0.0"

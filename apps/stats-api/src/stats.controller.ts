@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { MediaStatus } from '@prisma/client';
 import { BearerAuthGuard } from './auth.guard';
 import { StatsService } from './stats.service';
@@ -11,6 +11,11 @@ export class StatsController {
   @Get('stats/overview')
   overview(): Promise<Record<string, unknown>> {
     return this.statsService.overview();
+  }
+
+  @Get('dashboard/overview')
+  dashboardOverview(): Promise<Record<string, unknown>> {
+    return this.statsService.dashboardOverview();
   }
 
   @Get('stats/today')

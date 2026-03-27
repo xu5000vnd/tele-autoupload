@@ -45,6 +45,21 @@ enum JobEventType {
   skipped
 }
 
+enum MessageCampaignStatus {
+  pending
+  running
+  completed
+  partial_failed
+  failed
+}
+
+enum MessageDeliveryStatus {
+  queued
+  sending
+  sent
+  failed
+}
+
 model GroupState {
   chatId            BigInt            @id @map("chat_id")
   title             String
@@ -137,9 +152,63 @@ model UserTu {
   status           UserTuStatus @default(active)
   createdAt        DateTime     @default(now()) @map("created_at")
   updatedAt        DateTime?    @map("updated_at")
+  messageTargets   MessageCampaignTarget[]
 
   @@unique([telegramUserId, telegramChatId])
   @@index([telegramUserId, status])
   @@index([username, telegramChatId])
   @@map("user_tu")
+}
+
+model MessageCampaign {
+  id             String                @id @default(uuid())
+  bodyTemplate   String                @map("body_template")
+  createdBy      String?               @map("created_by")
+  status         MessageCampaignStatus @default(pending)
+  totalTargets   Int                   @default(0) @map("total_targets")
+  successTargets Int                   @default(0) @map("success_targets")
+  failedTargets  Int                   @default(0) @map("failed_targets")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime?             @map("updated_at")
+  medias         MessageCampaignMedia[]
+  targets        MessageCampaignTarget[]
+
+  @@index([createdAt])
+  @@map("message_campaign")
+}
+
+model MessageCampaignMedia {
+  id         Int             @id @default(autoincrement())
+  campaignId String          @map("campaign_id")
+  fileName   String          @map("file_name")
+  mimeType   String?         @map("mime_type")
+  localPath  String          @map("local_path")
+  orderIndex Int             @default(0) @map("order_index")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  campaign   MessageCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, orderIndex])
+  @@map("message_campaign_media")
+}
+
+model MessageCampaignTarget {
+  id             Int                   @id @default(autoincrement())
+  campaignId     String                @map("campaign_id")
+  userTuId       Int?                  @map("user_tu_id")
+  telegramChatId BigInt                @map("telegram_chat_id")
+  tuNameSnapshot String                @map("tu_name_snapshot")
+  renderedBody   String                @map("rendered_body")
+  status         MessageDeliveryStatus @default(queued)
+  attemptCount   Int                   @default(0) @map("attempt_count")
+  error          String?
+  sentAt         DateTime?             @map("sent_at")
+  failedAt       DateTime?             @map("failed_at")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime?             @map("updated_at")
+  campaign       MessageCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  userTu         UserTu?               @relation(fields: [userTuId], references: [id], onDelete: SetNull)
+
+  @@unique([campaignId, telegramChatId])
+  @@index([campaignId, status])
+  @@map("message_campaign_target")
 }

@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { appConfig } from '@shared/config/env';
 import { MediaService } from '@shared/services/media.service';
+import { TelegramNotifierService } from '@shared/services/telegram-notifier.service';
 import { TelegramGateway } from '@shared/telegram/telegram-gateway';
 import { PrismaService } from '@shared/db/prisma.service';
 import { IncomingMessage } from '@shared/types/telegram';
@@ -12,11 +13,14 @@ import { UserTuStatus } from '@prisma/client';
 export class IngestorService implements OnModuleInit, OnModuleDestroy {
   private reconnecting = false;
   private logger = new Logger(IngestorService.name);
+  private readonly unknownUserNotifyCooldownMs = 10 * 60 * 1000;
+  private readonly unknownUserLastNotifiedAt = new Map<string, number>();
 
   constructor(
     private readonly telegramGateway: TelegramGateway,
     private readonly mediaService: MediaService,
     private readonly prisma: PrismaService,
+    private readonly telegramNotifier: TelegramNotifierService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -58,6 +62,7 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
         { senderId: message.senderId?.toString(), senderUsername: message.senderUsername, chatId: message.chatId.toString() },
         'message from unregistered or inactive user — skipped',
       );
+      await this.notifyUnknownUploader(message);
       return;
     }
 
@@ -131,5 +136,46 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
     } finally {
       this.reconnecting = false;
     }
+  }
+
+  private async notifyUnknownUploader(message: IncomingMessage): Promise<void> {
+    if (this.isWhitelistedUnknownUploader(message.senderUsername)) {
+      logger.info(
+        { senderUsername: message.senderUsername, chatId: message.chatId.toString() },
+        'unknown uploader matched whitelist username; notification skipped',
+      );
+      return;
+    }
+
+    const senderKey = message.senderId?.toString() ?? `username:${message.senderUsername ?? 'unknown'}`;
+    const key = `${message.chatId.toString()}_${senderKey}`;
+    const now = Date.now();
+    const last = this.unknownUserLastNotifiedAt.get(key);
+    if (last && now - last < this.unknownUserNotifyCooldownMs) {
+      return;
+    }
+
+    // Keep map bounded over time.
+    for (const [k, ts] of this.unknownUserLastNotifiedAt.entries()) {
+      if (now - ts > this.unknownUserNotifyCooldownMs * 2) {
+        this.unknownUserLastNotifiedAt.delete(k);
+      }
+    }
+
+    this.unknownUserLastNotifiedAt.set(key, now);
+
+    const senderId = message.senderId?.toString() ?? 'unknown';
+    const senderUsername = message.senderUsername ? `@${message.senderUsername}` : 'unknown';
+    await this.telegramNotifier.notify(
+      `⚠️ Unregistered uploader detected: chatId=${message.chatId.toString()}, senderId=${senderId}, username=${senderUsername}, messageId=${message.messageId.toString()}. User may have changed username or is not in user_tu.`,
+    );
+  }
+
+  private isWhitelistedUnknownUploader(senderUsername?: string): boolean {
+    if (!senderUsername) {
+      return false;
+    }
+    const normalized = senderUsername.toLowerCase().replace(/^@+/, '');
+    return appConfig.unregisteredUploaderUsernameWhitelist.includes(normalized);
   }
 }

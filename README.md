@@ -116,12 +116,25 @@ This starts all three services concurrently with colored labels:
 [stats]     cyan
 ```
 
+Start backend + web admin together:
+
+```bash
+npm run dev:all
+```
+
 Or start individually:
 
 ```bash
 npm run start:ingestor
 npm run start:uploader
 npm run start:stats
+npm run start:web
+```
+
+Install frontend dependencies once:
+
+```bash
+npm --prefix apps/web-admin install
 ```
 
 ---
@@ -143,6 +156,7 @@ npm run start:stats
 | `UPLOAD_DATE_BUCKET_DAYS` | optional | Date bucket size for desktop folder grouping (default: `10`) |
 | `BOT_TOKEN` | optional | Telegram bot token from `@BotFather` |
 | `BOT_REPORT_CHAT_ID` | optional | Chat ID to receive automatic daily summary at 09:00 UTC |
+| `UNREGISTERED_UPLOADER_USERNAME_WHITELIST` | optional | Comma/semicolon/newline-separated usernames to skip "Unregistered uploader" notifications (supports values with or without `@`) |
 | `STATS_API_PORT` | optional | Stats API port (default: `3100`) |
 | `STATS_API_AUTH_TOKEN` | optional | Bearer token for the stats API |
 | `UPLOAD_CONCURRENCY` | optional | Parallel upload jobs (default: `6`) |

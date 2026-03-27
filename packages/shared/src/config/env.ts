@@ -3,6 +3,14 @@ import { z } from 'zod';
 
 loadEnv();
 
+function parseUsernameWhitelist(raw: string): string[] {
+  return raw
+    .split(/[,\n;]+/)
+    .map((v) => v.trim().toLowerCase())
+    .map((v) => v.replace(/^@+/, ''))
+    .filter(Boolean);
+}
+
 const baseSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   LOG_LEVEL: z.string().default('info'),
@@ -27,6 +35,7 @@ const baseSchema = z.object({
   STATS_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   BOT_TOKEN: z.string().optional(),
   BOT_REPORT_CHAT_ID: z.string().optional(),
+  UNREGISTERED_UPLOADER_USERNAME_WHITELIST: z.string().default(''),
   DRIVE_ROOT_FOLDER_ID: z.string().optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -74,6 +83,7 @@ export function parseEnv(): {
   statsRetentionDays: number;
   botToken?: string;
   botReportChatId?: string;
+  unregisteredUploaderUsernameWhitelist: string[];
   drive: {
     rootFolderId?: string;
     clientId?: string;
@@ -127,6 +137,7 @@ export function parseEnv(): {
     statsRetentionDays: env.STATS_RETENTION_DAYS,
     botToken: env.BOT_TOKEN,
     botReportChatId: env.BOT_REPORT_CHAT_ID,
+    unregisteredUploaderUsernameWhitelist: parseUsernameWhitelist(env.UNREGISTERED_UPLOADER_USERNAME_WHITELIST),
     drive: {
       rootFolderId: env.DRIVE_ROOT_FOLDER_ID,
       clientId: env.GOOGLE_CLIENT_ID,

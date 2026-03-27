@@ -21,6 +21,7 @@
     }
   },
   "include": ["apps/**/*.ts", "packages/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["apps/web-admin/**/*"],
   "ts-node": {
     "require": ["tsconfig-paths/register"],
     "transpileOnly": false

@@ -21,6 +21,7 @@ export class TelegramGateway {
   private client!: TelegramClient;
   private newMessageHandlers: MessageHandler[] = [];
   private editMessageHandlers: MessageHandler[] = [];
+  private updatesRegistered = false;
 
   private buildClient(): TelegramClient {
     const { apiId, apiHash, session } = appConfig.telegram;
@@ -36,11 +37,26 @@ export class TelegramGateway {
     );
   }
 
-  // Full connection: receives updates + registers event handlers (ingestor)
-  async connect(): Promise<void> {
-    this.client = this.buildClient();
-    await this.client.connect();
-    logger.info('telegram gateway connected');
+  // Connection for ingest or outbound send. `withUpdates=true` registers update handlers.
+  async connect(options: { withUpdates?: boolean } = {}): Promise<void> {
+    const withUpdates = options.withUpdates ?? true;
+
+    if (!this.client?.connected) {
+      this.client = this.buildClient();
+      await this.client.connect();
+      logger.info('telegram gateway connected');
+    }
+
+    if (withUpdates) {
+      this.registerUpdateHandlers();
+    }
+  }
+
+  private registerUpdateHandlers(): void {
+    if (this.updatesRegistered) {
+      return;
+    }
+    this.updatesRegistered = true;
 
     this.client.addEventHandler(async (event: { message: Api.Message }) => {
       logger.info({
@@ -93,6 +109,41 @@ export class TelegramGateway {
       await this.client.disconnect();
     }
     logger.info('telegram gateway disconnected');
+  }
+
+  async sendText(chatId: bigint, text: string): Promise<void> {
+    if (!this.client?.connected) {
+      throw new Error('Telegram gateway is not connected');
+    }
+    const peer = this.chatIdToPeer(chatId);
+    await this.client.sendMessage(peer, { message: text });
+  }
+
+  async sendMedia(chatId: bigint, localPaths: string[], caption?: string): Promise<void> {
+    if (!this.client?.connected) {
+      throw new Error('Telegram gateway is not connected');
+    }
+    if (!localPaths.length) {
+      if (caption) {
+        await this.sendText(chatId, caption);
+      }
+      return;
+    }
+
+    const peer = this.chatIdToPeer(chatId);
+    if (localPaths.length === 1) {
+      await this.client.sendFile(peer, {
+        file: localPaths[0],
+        caption,
+      });
+      return;
+    }
+
+    await this.client.sendFile(peer, {
+      file: localPaths,
+      caption: caption ?? '',
+      forceDocument: false,
+    });
   }
 
   onNewMessage(handler: MessageHandler): void {

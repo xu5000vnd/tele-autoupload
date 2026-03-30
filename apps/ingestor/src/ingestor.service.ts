@@ -196,8 +196,10 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
 
     const senderId = message.senderId?.toString() ?? 'unknown';
     const senderUsername = message.senderUsername ? `@${message.senderUsername}` : 'unknown';
+    const groupTitle = message.chatTitle?.trim() || 'unknown';
+    const groupTuHint = await this.buildGroupTuHint(message.chatId);
     await this.telegramNotifier.notify(
-      `⚠️ Unregistered uploader detected: chatId=${message.chatId.toString()}, senderId=${senderId}, username=${senderUsername}, messageId=${message.messageId.toString()}. User may have changed username or is not in user_tu.`,
+      `⚠️ Unregistered uploader detected: chatId=${message.chatId.toString()}, group=${groupTitle}, tu_in_group=${groupTuHint}, senderId=${senderId}, username=${senderUsername}, messageId=${message.messageId.toString()}. User may have changed username or is not in user_tu.`,
     );
   }
 
@@ -245,5 +247,30 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
     }
 
     return [...values.values()];
+  }
+
+  private async buildGroupTuHint(chatId: bigint): Promise<string> {
+    const rows = await this.prisma.userTu.findMany({
+      where: {
+        status: UserTuStatus.active,
+        telegramChatId: { in: this.chatIdLookupAliases(chatId) },
+      },
+      select: {
+        tuId: true,
+        tuName: true,
+      },
+      orderBy: { id: 'asc' },
+      take: 6,
+    });
+
+    if (!rows.length) {
+      return 'none';
+    }
+
+    const preview = rows.slice(0, 5).map((row) => `[${row.tuId}] ${row.tuName}`).join(' | ');
+    if (rows.length > 5) {
+      return `${preview} | ...`;
+    }
+    return preview;
   }
 }

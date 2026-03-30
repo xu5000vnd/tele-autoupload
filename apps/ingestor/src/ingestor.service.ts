@@ -7,7 +7,7 @@ import { TelegramGateway } from '@shared/telegram/telegram-gateway';
 import { PrismaService } from '@shared/db/prisma.service';
 import { IncomingMessage } from '@shared/types/telegram';
 import { logger } from '@shared/utils/logger';
-import { UserTuStatus } from '@prisma/client';
+import { Prisma, UserTuStatus } from '@prisma/client';
 
 @Injectable()
 export class IngestorService implements OnModuleInit, OnModuleDestroy {
@@ -49,9 +49,11 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
       orConditions.push({ username: message.senderUsername });
     }
 
+    const chatIdsForLookup = this.chatIdLookupAliases(message.chatId);
+
     const allowedUser = await this.prisma.userTu.findFirst({
       where: {
-        telegramChatId: message.chatId,
+        telegramChatId: { in: chatIdsForLookup },
         status: UserTuStatus.active,
         OR: orConditions,
       },
@@ -66,22 +68,33 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const patchData: Prisma.UserTuUpdateInput = {};
     // If the record was matched by username but the stored telegram_user_id doesn't match
     // the actual sender, back-fill it so future lookups use the faster numeric ID.
-    if (
-      message.senderId &&
-      allowedUser.telegramUserId !== message.senderId
-    ) {
+    if (message.senderId && allowedUser.telegramUserId !== message.senderId) {
+      patchData.telegramUserId = message.senderId;
+    }
+    // Auto-normalize old chat IDs to canonical bot-api format (-100...).
+    if (allowedUser.telegramChatId !== message.chatId) {
+      patchData.telegramChatId = message.chatId;
+    }
+    if (Object.keys(patchData).length) {
       await this.prisma.userTu.update({
         where: { id: allowedUser.id },
         data: {
-          telegramUserId: message.senderId,
+          ...patchData,
           updatedAt: new Date(),
         },
       });
       logger.info(
-        { userTuId: allowedUser.id, oldId: allowedUser.telegramUserId.toString(), newId: message.senderId.toString() },
-        'back-filled telegram_user_id from username match',
+        {
+          userTuId: allowedUser.id,
+          oldTelegramUserId: allowedUser.telegramUserId.toString(),
+          newTelegramUserId: message.senderId?.toString(),
+          oldTelegramChatId: allowedUser.telegramChatId.toString(),
+          newTelegramChatId: message.chatId.toString(),
+        },
+        'back-filled user_tu identifiers from incoming message',
       );
     }
 
@@ -103,10 +116,27 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      const messages = await this.telegramGateway.fetchHistoryAfter({
-        chatId: group.chatId,
-        afterMessageId: group.lastMessageId,
-      });
+      let messages: IncomingMessage[] = [];
+      try {
+        messages = await this.telegramGateway.fetchHistoryAfter({
+          chatId: group.chatId,
+          afterMessageId: group.lastMessageId,
+        });
+      } catch (err) {
+        logger.warn(
+          {
+            err,
+            chatId: group.chatId.toString(),
+            lastMessageId: group.lastMessageId.toString(),
+          },
+          'reconcile: failed to fetch history for group; skipping this cycle',
+        );
+        await this.prisma.groupState.update({
+          where: { chatId: group.chatId },
+          data: { lastReconciledAt: new Date() },
+        });
+        continue;
+      }
 
       for (const message of messages) {
         await this.handleIncoming(message);
@@ -177,5 +207,43 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
     }
     const normalized = senderUsername.toLowerCase().replace(/^@+/, '');
     return appConfig.unregisteredUploaderUsernameWhitelist.includes(normalized);
+  }
+
+  private chatIdLookupAliases(chatId: bigint): bigint[] {
+    const values = new Map<string, bigint>();
+    const add = (id: bigint): void => {
+      values.set(id.toString(), id);
+    };
+
+    add(chatId);
+    if (chatId >= 0n) {
+      return [...values.values()];
+    }
+
+    const positiveId = -chatId;
+    if (positiveId > 1_000_000_000_000n) {
+      const channelId = positiveId - 1_000_000_000_000n;
+      add(-channelId); // legacy form
+      add(BigInt(`-100${channelId.toString()}`)); // malformed historic form
+      return [...values.values()];
+    }
+
+    if (positiveId > 2_147_483_647n) {
+      const channelId = positiveId;
+      add(-(1_000_000_000_000n + channelId)); // canonical form
+      add(BigInt(`-100${channelId.toString()}`)); // malformed historic form
+      return [...values.values()];
+    }
+
+    const asText = positiveId.toString();
+    if (asText.startsWith('100') && asText.length > 3) {
+      const channelId = BigInt(asText.slice(3));
+      if (channelId > 0n) {
+        add(-(1_000_000_000_000n + channelId)); // canonical form
+        add(-channelId); // legacy form
+      }
+    }
+
+    return [...values.values()];
   }
 }

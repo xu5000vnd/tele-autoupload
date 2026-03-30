@@ -22,6 +22,7 @@ export class TelegramGateway {
   private newMessageHandlers: MessageHandler[] = [];
   private editMessageHandlers: MessageHandler[] = [];
   private updatesRegistered = false;
+  private dialogsCacheWarmed = false;
 
   private buildClient(): TelegramClient {
     const { apiId, apiHash, session } = appConfig.telegram;
@@ -44,6 +45,7 @@ export class TelegramGateway {
     if (!this.client?.connected) {
       this.client = this.buildClient();
       await this.client.connect();
+      await this.warmDialogsCache();
       logger.info('telegram gateway connected');
     }
 
@@ -108,15 +110,31 @@ export class TelegramGateway {
     if (this.client?.connected) {
       await this.client.disconnect();
     }
+    this.dialogsCacheWarmed = false;
     logger.info('telegram gateway disconnected');
+  }
+
+  private async warmDialogsCache(): Promise<void> {
+    if (this.dialogsCacheWarmed) {
+      return;
+    }
+    try {
+      // Warm entity cache so PeerChannel resolution has access hashes for joined groups.
+      await this.client.getDialogs({ limit: 1000 });
+      this.dialogsCacheWarmed = true;
+      logger.info('telegram dialogs cache warmed');
+    } catch (err) {
+      logger.warn({ err }, 'failed to warm telegram dialogs cache');
+    }
   }
 
   async sendText(chatId: bigint, text: string): Promise<void> {
     if (!this.client?.connected) {
       throw new Error('Telegram gateway is not connected');
     }
-    const peer = this.chatIdToPeer(chatId);
-    await this.client.sendMessage(peer, { message: text });
+    await this.withPeerFallback(chatId, 'sendText', async (peer) => {
+      await this.client.sendMessage(peer, { message: text });
+    });
   }
 
   async sendMedia(chatId: bigint, localPaths: string[], caption?: string): Promise<void> {
@@ -130,19 +148,20 @@ export class TelegramGateway {
       return;
     }
 
-    const peer = this.chatIdToPeer(chatId);
-    if (localPaths.length === 1) {
-      await this.client.sendFile(peer, {
-        file: localPaths[0],
-        caption,
-      });
-      return;
-    }
+    await this.withPeerFallback(chatId, 'sendMedia', async (peer) => {
+      if (localPaths.length === 1) {
+        await this.client.sendFile(peer, {
+          file: localPaths[0],
+          caption,
+        });
+        return;
+      }
 
-    await this.client.sendFile(peer, {
-      file: localPaths,
-      caption: caption ?? '',
-      forceDocument: false,
+      await this.client.sendFile(peer, {
+        file: localPaths,
+        caption: caption ?? '',
+        forceDocument: false,
+      });
     });
   }
 
@@ -172,9 +191,10 @@ export class TelegramGateway {
     mediaIndex: number;
     destinationPath: string;
   }): Promise<{ sizeBytes: bigint }> {
-    const peer = this.chatIdToPeer(input.chatId);
-    const messages = await this.client.getMessages(peer, {
-      ids: [input.messageId],
+    const messages = await this.withPeerFallback(input.chatId, 'downloadMediaToFile/getMessages', async (peer) => {
+      return this.client.getMessages(peer, {
+        ids: [input.messageId],
+      });
     });
 
     const message = messages[0];
@@ -199,10 +219,11 @@ export class TelegramGateway {
     chatId: bigint;
     afterMessageId: bigint;
   }): Promise<IncomingMessage[]> {
-    const peer = this.chatIdToPeer(input.chatId);
-    const messages = await this.client.getMessages(peer, {
-      minId: Number(input.afterMessageId),
-      limit: 100,
+    const messages = await this.withPeerFallback(input.chatId, 'fetchHistoryAfter/getMessages', async (peer) => {
+      return this.client.getMessages(peer, {
+        minId: Number(input.afterMessageId),
+        limit: 100,
+      });
     });
 
     const results: IncomingMessage[] = [];
@@ -322,6 +343,107 @@ export class TelegramGateway {
     throw new Error(`Unknown peer type: ${(peer as { className?: string }).className}`);
   }
 
+  private toShortPrefixedChannelChatId(channelId: bigint): bigint {
+    return BigInt(`-100${channelId.toString()}`);
+  }
+
+  private expandChatIdAliases(chatId: bigint): bigint[] {
+    const values = new Map<string, bigint>();
+    const add = (id: bigint): void => {
+      values.set(id.toString(), id);
+    };
+
+    add(chatId);
+    if (chatId >= 0n) {
+      return [...values.values()];
+    }
+
+    const positiveId = -chatId;
+
+    // Canonical bot-api channel/supergroup chat ID: -100xxxxxxxxxx (internally 1e12 + channelId).
+    if (positiveId > 1_000_000_000_000n) {
+      const channelId = positiveId - 1_000_000_000_000n;
+      add(-channelId); // legacy/mtproto-style storage
+      add(this.toShortPrefixedChannelChatId(channelId)); // malformed historic "prefix-only" storage
+      return [...values.values()];
+    }
+
+    // Legacy negative channel ID (without bot-api 1e12 offset).
+    if (positiveId > 2_147_483_647n) {
+      const channelId = positiveId;
+      add(-(1_000_000_000_000n + channelId)); // canonical bot-api form
+      add(this.toShortPrefixedChannelChatId(channelId)); // malformed historic "prefix-only" storage
+      return [...values.values()];
+    }
+
+    // Malformed historic form: -100<channelId> but without 1e12 offset.
+    const asText = positiveId.toString();
+    if (asText.startsWith('100') && asText.length > 3) {
+      const channelId = BigInt(asText.slice(3));
+      if (channelId > 0n) {
+        add(-(1_000_000_000_000n + channelId)); // canonical bot-api form
+        add(-channelId); // legacy/mtproto-style storage
+      }
+    }
+
+    return [...values.values()];
+  }
+
+  private async withPeerFallback<T>(
+    chatId: bigint,
+    operation: string,
+    worker: (peer: Api.TypePeer) => Promise<T>,
+  ): Promise<T> {
+    const candidateIds = this.expandChatIdAliases(chatId);
+    let lastErr: unknown;
+
+    for (const candidateId of candidateIds) {
+      try {
+        return await worker(this.chatIdToPeer(candidateId));
+      } catch (err) {
+        lastErr = err;
+        const info = this.rpcErrorInfo(err);
+        logger.debug(
+          {
+            operation,
+            inputChatId: chatId.toString(),
+            candidateChatId: candidateId.toString(),
+            rpcCode: info.code,
+            rpcMessage: info.errorMessage,
+          },
+          'telegram peer candidate failed',
+        );
+      }
+    }
+
+    const info = this.rpcErrorInfo(lastErr);
+    logger.warn(
+      {
+        operation,
+        inputChatId: chatId.toString(),
+        candidates: candidateIds.map((x) => x.toString()),
+        rpcCode: info.code,
+        rpcMessage: info.errorMessage,
+      },
+      'all telegram peer candidates failed',
+    );
+    throw (lastErr instanceof Error ? lastErr : new Error(`Failed ${operation} for chatId=${chatId.toString()}`));
+  }
+
+  private rpcErrorInfo(err: unknown): { code?: number; errorMessage?: string } {
+    if (!err || typeof err !== 'object') {
+      return {};
+    }
+    const raw = err as Record<string, unknown>;
+    const code = typeof raw.code === 'number' ? raw.code : undefined;
+    const errorMessage = typeof raw.errorMessage === 'string'
+      ? raw.errorMessage
+      : typeof raw.message === 'string'
+        ? raw.message
+        : undefined;
+    return { code, errorMessage };
+  }
+
   private chatIdToPeer(chatId: bigint): Api.TypePeer {
     if (chatId > 0n) {
       return new Api.PeerUser({ userId: nativeToBi(chatId) });
@@ -329,6 +451,11 @@ export class TelegramGateway {
     const positiveId = -chatId;
     if (positiveId > 1_000_000_000_000n) {
       return new Api.PeerChannel({ channelId: nativeToBi(positiveId - 1_000_000_000_000n) });
+    }
+    // Backward compatibility for legacy stored channel IDs like `-5241895841`
+    // (missing bot-api `-100` prefix). Values above 32-bit chat range are channels.
+    if (positiveId > 2_147_483_647n) {
+      return new Api.PeerChannel({ channelId: nativeToBi(positiveId) });
     }
     return new Api.PeerChat({ chatId: nativeToBi(positiveId) });
   }

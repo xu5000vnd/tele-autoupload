@@ -7,7 +7,7 @@ import { TelegramGateway } from '@shared/telegram/telegram-gateway';
 import { PrismaService } from '@shared/db/prisma.service';
 import { IncomingMessage } from '@shared/types/telegram';
 import { logger } from '@shared/utils/logger';
-import { Prisma, UserTuStatus } from '@prisma/client';
+import { ChatType, Prisma, UserTuStatus } from '@prisma/client';
 
 @Injectable()
 export class IngestorService implements OnModuleInit, OnModuleDestroy {
@@ -110,18 +110,62 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
     const intervalMs = appConfig.reconciliationIntervalMin * 60_000;
     const now = Date.now();
 
-    const activeGroups = await this.prisma.groupState.findMany({ where: { isActive: true } });
+    const [activeGroups, configuredChats] = await Promise.all([
+      this.prisma.groupState.findMany({ where: { isActive: true } }),
+      this.prisma.userTu.findMany({
+        where: { status: UserTuStatus.active },
+        select: { telegramChatId: true },
+        distinct: ['telegramChatId'],
+      }),
+    ]);
+
+    const groupsByChatId = new Map<string, {
+      chatId: bigint;
+      title: string;
+      chatType: ChatType;
+      lastMessageId: bigint;
+      lastReconciledAt: Date | null;
+    }>();
+
     for (const group of activeGroups) {
+      groupsByChatId.set(group.chatId.toString(), {
+        chatId: group.chatId,
+        title: group.title,
+        chatType: group.chatType,
+        lastMessageId: group.lastMessageId,
+        lastReconciledAt: group.lastReconciledAt ?? null,
+      });
+    }
+
+    for (const row of configuredChats) {
+      const key = row.telegramChatId.toString();
+      if (groupsByChatId.has(key)) {
+        continue;
+      }
+      groupsByChatId.set(key, {
+        chatId: row.telegramChatId,
+        title: `chat_${row.telegramChatId.toString()}`,
+        chatType: this.inferChatTypeFromChatId(row.telegramChatId),
+        lastMessageId: 0n,
+        lastReconciledAt: null,
+      });
+    }
+
+    const reconcileGroups = [...groupsByChatId.values()];
+    for (const group of reconcileGroups) {
       if (group.lastReconciledAt && now - group.lastReconciledAt.getTime() < intervalMs) {
         continue;
       }
 
       let messages: IncomingMessage[] = [];
+      let maxSeenMessageId = group.lastMessageId;
       try {
-        messages = await this.telegramGateway.fetchHistoryAfter({
+        const fetched = await this.telegramGateway.fetchHistoryAfter({
           chatId: group.chatId,
           afterMessageId: group.lastMessageId,
         });
+        messages = fetched.messages;
+        maxSeenMessageId = fetched.maxSeenMessageId;
       } catch (err) {
         logger.warn(
           {
@@ -131,9 +175,17 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
           },
           'reconcile: failed to fetch history for group; skipping this cycle',
         );
-        await this.prisma.groupState.update({
+        await this.prisma.groupState.upsert({
           where: { chatId: group.chatId },
-          data: { lastReconciledAt: new Date() },
+          update: { lastReconciledAt: new Date() },
+          create: {
+            chatId: group.chatId,
+            title: group.title,
+            chatType: group.chatType,
+            isActive: true,
+            lastMessageId: group.lastMessageId,
+            lastReconciledAt: new Date(),
+          },
         });
         continue;
       }
@@ -142,12 +194,21 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
         await this.handleIncoming(message);
       }
 
-      const maxMessageId = messages.reduce<bigint>((acc, item) => (item.messageId > acc ? item.messageId : acc), group.lastMessageId);
-
-      await this.prisma.groupState.update({
+      await this.prisma.groupState.upsert({
         where: { chatId: group.chatId },
-        data: {
-          lastMessageId: maxMessageId,
+        update: {
+          title: group.title,
+          chatType: group.chatType,
+          isActive: true,
+          lastMessageId: maxSeenMessageId,
+          lastReconciledAt: new Date(),
+        },
+        create: {
+          chatId: group.chatId,
+          title: group.title,
+          chatType: group.chatType,
+          isActive: true,
+          lastMessageId: maxSeenMessageId,
           lastReconciledAt: new Date(),
         },
       });
@@ -272,5 +333,15 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
       return `${preview} | ...`;
     }
     return preview;
+  }
+
+  private inferChatTypeFromChatId(chatId: bigint): ChatType {
+    if (chatId < 0n && -chatId > 1_000_000_000_000n) {
+      return ChatType.supergroup;
+    }
+    if (chatId < 0n) {
+      return ChatType.group;
+    }
+    return ChatType.group;
   }
 }

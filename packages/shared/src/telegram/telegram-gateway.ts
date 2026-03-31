@@ -218,21 +218,49 @@ export class TelegramGateway {
   async fetchHistoryAfter(input: {
     chatId: bigint;
     afterMessageId: bigint;
-  }): Promise<IncomingMessage[]> {
-    const messages = await this.withPeerFallback(input.chatId, 'fetchHistoryAfter/getMessages', async (peer) => {
-      return this.client.getMessages(peer, {
-        minId: Number(input.afterMessageId),
-        limit: 100,
-      });
+  }): Promise<{ messages: IncomingMessage[]; maxSeenMessageId: bigint }> {
+    const maxBackfillMessages = 3000;
+    const fromMessageId = Number(input.afterMessageId);
+    const collected = await this.withPeerFallback(input.chatId, 'fetchHistoryAfter/iterMessages', async (peer) => {
+      const rows: Api.Message[] = [];
+      for await (const raw of this.client.iterMessages(peer, {
+        minId: fromMessageId,
+        reverse: true,
+        limit: maxBackfillMessages,
+      })) {
+        if (raw instanceof Api.Message) {
+          rows.push(raw);
+        }
+      }
+      return rows;
     });
 
+    let maxSeenMessageId = input.afterMessageId;
     const results: IncomingMessage[] = [];
-    for (const raw of messages) {
-      if (!(raw instanceof Api.Message)) continue;
+    for (const raw of collected) {
+      if (BigInt(raw.id) > maxSeenMessageId) {
+        maxSeenMessageId = BigInt(raw.id);
+      }
       const parsed = await this.parseMessage(raw);
       if (parsed) results.push(parsed);
     }
-    return results;
+
+    if (collected.length >= maxBackfillMessages) {
+      logger.warn(
+        {
+          chatId: input.chatId.toString(),
+          afterMessageId: input.afterMessageId.toString(),
+          fetched: collected.length,
+          maxBackfillMessages,
+        },
+        'history backfill hit batch cap; consider reducing reconciliation interval',
+      );
+    }
+
+    return {
+      messages: results,
+      maxSeenMessageId,
+    };
   }
 
   private async parseMessage(msg: Api.Message): Promise<IncomingMessage | null> {

@@ -40,32 +40,62 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // Match by numeric user ID or by Telegram username (case-insensitive, stored lowercase)
-    const orConditions: object[] = [];
-    if (message.senderId) {
-      orConditions.push({ telegramUserId: message.senderId });
-    }
-    if (message.senderUsername) {
-      orConditions.push({ username: message.senderUsername });
-    }
-
     const chatIdsForLookup = this.chatIdLookupAliases(message.chatId);
 
-    const allowedUser = await this.prisma.userTu.findFirst({
-      where: {
-        telegramChatId: { in: chatIdsForLookup },
-        status: UserTuStatus.active,
-        OR: orConditions,
-      },
-    });
+    // Step 1: strict match by senderId first (preferred stable key).
+    let allowedUser = message.senderId
+      ? await this.prisma.userTu.findFirst({
+          where: {
+            telegramChatId: { in: chatIdsForLookup },
+            status: UserTuStatus.active,
+            telegramUserId: message.senderId,
+          },
+        })
+      : null;
+
+    // Step 2: if senderId is not found, fallback to username match.
+    if (!allowedUser && message.senderUsername) {
+      allowedUser = await this.prisma.userTu.findFirst({
+        where: {
+          telegramChatId: { in: chatIdsForLookup },
+          status: UserTuStatus.active,
+          username: message.senderUsername,
+        },
+      });
+    }
 
     if (!allowedUser) {
-      logger.info(
-        { senderId: message.senderId?.toString(), senderUsername: message.senderUsername, chatId: message.chatId.toString() },
-        'message from unregistered or inactive user — skipped',
-      );
-      await this.notifyUnknownUploader(message);
-      return;
+      // Fallback for 1-user TU groups: if there is exactly one active user in this chat,
+      // auto-link to that row and back-fill sender identifiers.
+      const activeUsersInChat = await this.prisma.userTu.findMany({
+        where: {
+          telegramChatId: { in: chatIdsForLookup },
+          status: UserTuStatus.active,
+        },
+        take: 2,
+        orderBy: { id: 'asc' },
+      });
+
+      if (activeUsersInChat.length === 1) {
+        allowedUser = activeUsersInChat[0];
+        logger.info(
+          {
+            chatId: message.chatId.toString(),
+            userTuId: allowedUser.id,
+            tuId: allowedUser.tuId,
+            senderId: message.senderId?.toString(),
+            senderUsername: message.senderUsername,
+          },
+          'auto-linked incoming message to single active user in chat',
+        );
+      } else {
+        logger.info(
+          { senderId: message.senderId?.toString(), senderUsername: message.senderUsername, chatId: message.chatId.toString() },
+          'message from unregistered or inactive user — skipped',
+        );
+        await this.notifyUnknownUploader(message);
+        return;
+      }
     }
 
     const patchData: Prisma.UserTuUpdateInput = {};
@@ -73,6 +103,9 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
     // the actual sender, back-fill it so future lookups use the faster numeric ID.
     if (message.senderId && allowedUser.telegramUserId !== message.senderId) {
       patchData.telegramUserId = message.senderId;
+    }
+    if (message.senderUsername && allowedUser.username !== message.senderUsername) {
+      patchData.username = message.senderUsername;
     }
     // Auto-normalize old chat IDs to canonical bot-api format (-100...).
     if (allowedUser.telegramChatId !== message.chatId) {
@@ -93,6 +126,8 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
           newTelegramUserId: message.senderId?.toString(),
           oldTelegramChatId: allowedUser.telegramChatId.toString(),
           newTelegramChatId: message.chatId.toString(),
+          oldTelegramUsername: allowedUser.username,
+          newTelegramUsername: message.senderUsername,
         },
         'back-filled user_tu identifiers from incoming message',
       );

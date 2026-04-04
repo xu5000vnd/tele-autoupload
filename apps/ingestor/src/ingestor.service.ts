@@ -65,37 +65,12 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!allowedUser) {
-      // Fallback for 1-user TU groups: if there is exactly one active user in this chat,
-      // auto-link to that row and back-fill sender identifiers.
-      const activeUsersInChat = await this.prisma.userTu.findMany({
-        where: {
-          telegramChatId: { in: chatIdsForLookup },
-          status: UserTuStatus.active,
-        },
-        take: 2,
-        orderBy: { id: 'asc' },
-      });
-
-      if (activeUsersInChat.length === 1) {
-        allowedUser = activeUsersInChat[0];
-        logger.info(
-          {
-            chatId: message.chatId.toString(),
-            userTuId: allowedUser.id,
-            tuId: allowedUser.tuId,
-            senderId: message.senderId?.toString(),
-            senderUsername: message.senderUsername,
-          },
-          'auto-linked incoming message to single active user in chat',
-        );
-      } else {
-        logger.info(
-          { senderId: message.senderId?.toString(), senderUsername: message.senderUsername, chatId: message.chatId.toString() },
-          'message from unregistered or inactive user — skipped',
-        );
-        await this.notifyUnknownUploader(message);
-        return;
-      }
+      logger.info(
+        { senderId: message.senderId?.toString(), senderUsername: message.senderUsername, chatId: message.chatId.toString() },
+        'message from unregistered or inactive user — skipped',
+      );
+      await this.notifyUnknownUploader(message);
+      return;
     }
 
     const patchData: Prisma.UserTuUpdateInput = {};

@@ -30,6 +30,16 @@ function saveToken(): void {
 }
 </script>
 
+<style>
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  background: #0b1220;
+}
+</style>
+
 <style scoped>
 .app-shell {
   min-height: 100vh;

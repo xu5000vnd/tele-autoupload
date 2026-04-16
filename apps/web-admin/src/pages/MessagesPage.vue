@@ -1,6 +1,7 @@
 <template>
   <section class="card">
     <h2>Broadcast Messages</h2>
+    <p v-if="prefillMsg" class="info">{{ prefillMsg }}</p>
 
     <div class="field">
       <label>Recipients (multi checkbox)</label>
@@ -77,7 +78,14 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { apiGet, apiPost, fileToBase64, type Target } from "../services/api";
+import {
+  apiGet,
+  apiPost,
+  clearDashboardSelectedTargetIds,
+  fileToBase64,
+  readDashboardSelectedTargetIds,
+  type Target,
+} from "../services/api";
 
 type CreateCampaignResponse = {
   campaign_id: string;
@@ -103,6 +111,7 @@ const mediaItems = ref<SelectedMedia[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const successMsg = ref("");
 const errorMsg = ref("");
+const prefillMsg = ref("");
 
 const previewBody = computed(() => {
   const first = targets.value.find((t) => selectedIds.value.includes(t.id));
@@ -151,11 +160,33 @@ async function loadTargets(): Promise<void> {
     );
     targets.value = data;
     applyFilter();
+    hydrateDashboardSelection();
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err);
   } finally {
     loadingTargets.value = false;
   }
+}
+
+function hydrateDashboardSelection(): void {
+  const storedIds = readDashboardSelectedTargetIds();
+  if (!storedIds.length) {
+    return;
+  }
+
+  const validIds = new Set(targets.value.map((target) => target.id));
+  const nextSelectedIds = storedIds.filter((id) => validIds.has(id));
+  clearDashboardSelectedTargetIds();
+
+  if (!nextSelectedIds.length) {
+    prefillMsg.value = "Dashboard selection did not contain any active recipients.";
+    return;
+  }
+
+  const merged = new Set(selectedIds.value);
+  nextSelectedIds.forEach((id) => merged.add(id));
+  selectedIds.value = [...merged];
+  prefillMsg.value = `Prefilled ${nextSelectedIds.length} recipient(s) from dashboard selection.`;
 }
 
 function selectAllVisible(): void {
@@ -398,5 +429,13 @@ pre {
 .err {
   color: #f87171;
   white-space: pre-wrap;
+}
+
+.info {
+  color: #93c5fd;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid #263244;
+  border-radius: 8px;
+  padding: 10px 12px;
 }
 </style>

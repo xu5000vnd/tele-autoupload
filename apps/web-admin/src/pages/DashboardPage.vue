@@ -5,10 +5,12 @@
         <h2>Dashboard</h2>
         <div class="muted" v-if="overview">Updated: {{ formatDate(overview.generated_at) }}</div>
       </div>
-      <button :disabled="loading" @click="loadOverview">{{ loading ? 'Loading...' : 'Reload' }}</button>
+      <button :disabled="loading" @click="loadDashboard">{{ loading ? 'Loading...' : 'Reload' }}</button>
     </div>
 
     <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
+
+    <div v-if="loading && !overview" class="card muted">Loading dashboard data...</div>
 
     <template v-if="overview">
       <div class="metrics-grid">
@@ -36,6 +38,78 @@
           <div class="metric-label">Storage Used</div>
           <div class="metric-value">{{ overview.health.staging.used_pct }}%</div>
           <div class="muted">{{ overview.health.staging.used_gb }} / {{ overview.health.staging.cap_gb }} GB</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-row">
+          <div>
+            <h3>Monthly Activity</h3>
+            <div class="muted">Uploaded media by month in {{ heatmap?.year ?? currentYear }}</div>
+          </div>
+          <span class="pill">{{ heatmap?.timezone ?? 'Asia/Ho_Chi_Minh' }}</span>
+        </div>
+
+        <div class="heat-grid" v-if="heatmap?.months?.length">
+          <button
+            v-for="month in heatmap.months"
+            :key="month.month_key"
+            type="button"
+            :class="['heat-cell', `heat-${heatLevel(month.total_media)}`]"
+            @click="openMonth(month.month_key)"
+          >
+            <span class="heat-label">{{ month.label }}</span>
+            <strong>{{ month.total_media }}</strong>
+            <span class="muted">{{ month.active_users }} active</span>
+          </button>
+        </div>
+        <div v-else class="muted">No monthly data available yet.</div>
+      </div>
+
+      <div class="card">
+        <div class="section-row">
+          <div>
+            <h3>No Image Upload This Month</h3>
+            <div class="muted">Active users with 0 uploaded photos in {{ formatMonthLabel(missingUsers?.month) }}</div>
+          </div>
+          <div class="selection-tools">
+            <button class="btn-secondary" type="button" @click="selectAllMissing" :disabled="!missingUsers?.items.length">
+              Select All
+            </button>
+            <button class="btn-secondary" type="button" @click="clearMissingSelection" :disabled="!missingSelectedIds.length">
+              Clear
+            </button>
+            <span class="muted">Selected: {{ missingSelectedIds.length }}</span>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="checkbox-cell"></th>
+                <th>User</th>
+                <th>Username</th>
+                <th>Chat</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in missingUsers?.items ?? []" :key="item.user_tu_id">
+                <td class="checkbox-cell">
+                  <input type="checkbox" :value="item.user_tu_id" v-model="missingSelectedIds" />
+                </td>
+                <td>
+                  <strong>{{ item.tu_name }}</strong>
+                  <div class="muted">{{ item.tu_id }}</div>
+                </td>
+                <td>{{ item.telegram_username ? `@${item.telegram_username}` : 'no_username' }}</td>
+                <td>{{ item.telegram_chat_id }}</td>
+              </tr>
+              <tr v-if="!(missingUsers?.items?.length)">
+                <td colspan="4" class="muted">Every active user has uploaded at least one photo this month.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -160,37 +234,126 @@
         </div>
       </div>
     </template>
+
+    <button
+      v-if="missingSelectedIds.length"
+      type="button"
+      class="floating-send"
+      @click="sendSelectedToMessages(missingSelectedIds)"
+    >
+      Send Message ({{ missingSelectedIds.length }})
+    </button>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import { RouterLink } from 'vue-router';
-import { apiGet, type DashboardOverview } from '../services/api';
+import { computed, onMounted, ref } from 'vue';
+import { RouterLink, useRouter } from 'vue-router';
+import {
+  apiGet,
+  storeDashboardSelectedTargetIds,
+  type DashboardOverview,
+  type MissingImageUsersResponse,
+  type MonthlyHeatmapResponse,
+} from '../services/api';
 
+const router = useRouter();
 const overview = ref<DashboardOverview | null>(null);
+const heatmap = ref<MonthlyHeatmapResponse | null>(null);
+const missingUsers = ref<MissingImageUsersResponse | null>(null);
+const missingSelectedIds = ref<number[]>([]);
 const loading = ref(false);
 const errorMsg = ref('');
+
+const currentYear = computed(() => new Date().getFullYear());
+const heatMax = computed(() => {
+  const totals = heatmap.value?.months.map((item) => item.total_media) ?? [];
+  return Math.max(0, ...totals);
+});
 
 function formatDate(value: string): string {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
-async function loadOverview(): Promise<void> {
+function formatMonthLabel(monthKey?: string | null): string {
+  if (!monthKey) {
+    return 'this month';
+  }
+
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) {
+    return monthKey;
+  }
+
+  const value = new Date(Number(match[1]), Number(match[2]) - 1, 1);
+  return value.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+
+function heatLevel(total: number): number {
+  if (total <= 0 || heatMax.value <= 0) {
+    return 0;
+  }
+
+  return Math.min(4, Math.max(1, Math.ceil((total / heatMax.value) * 4)));
+}
+
+function openMonth(monthKey: string): void {
+  void router.push(`/dashboard/month/${monthKey}`);
+}
+
+function selectAllMissing(): void {
+  const ids = (missingUsers.value?.items ?? []).map((item) => item.user_tu_id);
+  missingSelectedIds.value = [...new Set(ids)];
+}
+
+function clearMissingSelection(): void {
+  missingSelectedIds.value = [];
+}
+
+function sendSelectedToMessages(ids: number[]): void {
+  storeDashboardSelectedTargetIds(ids);
+  void router.push({ path: '/messages', query: { source: 'dashboard' } });
+}
+
+async function loadDashboard(): Promise<void> {
   loading.value = true;
   errorMsg.value = '';
-  try {
-    overview.value = await apiGet<DashboardOverview>('/api/dashboard/overview');
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err);
-  } finally {
-    loading.value = false;
+
+  const [overviewResult, heatmapResult, missingResult] = await Promise.allSettled([
+    apiGet<DashboardOverview>('/api/dashboard/overview'),
+    apiGet<MonthlyHeatmapResponse>('/api/dashboard/monthly-heatmap'),
+    apiGet<MissingImageUsersResponse>('/api/dashboard/current-month/missing-image-users?sortBy=tu_name&sortOrder=asc&limit=500&offset=0'),
+  ]);
+
+  const errors: string[] = [];
+
+  if (overviewResult.status === 'fulfilled') {
+    overview.value = overviewResult.value;
+  } else {
+    errors.push(overviewResult.reason instanceof Error ? overviewResult.reason.message : String(overviewResult.reason));
   }
+
+  if (heatmapResult.status === 'fulfilled') {
+    heatmap.value = heatmapResult.value;
+  } else {
+    errors.push(heatmapResult.reason instanceof Error ? heatmapResult.reason.message : String(heatmapResult.reason));
+  }
+
+  if (missingResult.status === 'fulfilled') {
+    missingUsers.value = missingResult.value;
+    const validIds = new Set(missingResult.value.items.map((item) => item.user_tu_id));
+    missingSelectedIds.value = missingSelectedIds.value.filter((id) => validIds.has(id));
+  } else {
+    errors.push(missingResult.reason instanceof Error ? missingResult.reason.message : String(missingResult.reason));
+  }
+
+  errorMsg.value = errors.join('\n');
+  loading.value = false;
 }
 
 onMounted(() => {
-  void loadOverview();
+  void loadDashboard();
 });
 </script>
 
@@ -199,6 +362,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding-bottom: 96px;
 }
 
 .card {
@@ -248,6 +412,75 @@ h3 {
   color: #f87171;
 }
 
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #172033;
+  color: #bfdbfe;
+  font-size: 12px;
+}
+
+.selection-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.heat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.heat-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 120px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid #31415a;
+  background: #0f172a;
+  color: #e5e7eb;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease;
+}
+
+.heat-cell:hover {
+  transform: translateY(-1px);
+  border-color: #60a5fa;
+}
+
+.heat-label {
+  font-size: 13px;
+  color: #bfdbfe;
+}
+
+.heat-0 {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.78));
+}
+
+.heat-1 {
+  background: linear-gradient(180deg, rgba(18, 44, 80, 0.95), rgba(17, 24, 39, 0.92));
+}
+
+.heat-2 {
+  background: linear-gradient(180deg, rgba(18, 74, 112, 0.95), rgba(17, 24, 39, 0.92));
+}
+
+.heat-3 {
+  background: linear-gradient(180deg, rgba(20, 102, 129, 0.95), rgba(17, 24, 39, 0.92));
+}
+
+.heat-4 {
+  background: linear-gradient(180deg, rgba(22, 163, 74, 0.95), rgba(17, 24, 39, 0.92));
+}
+
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -274,6 +507,10 @@ td {
 
 th {
   color: #93c5fd;
+}
+
+.checkbox-cell {
+  width: 42px;
 }
 
 .status {
@@ -316,6 +553,21 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.btn-secondary {
+  background: #1e293b;
+}
+
+.floating-send {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  border-radius: 999px;
+  padding: 14px 18px;
+  background: #16a34a;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
 .muted {
   color: #94a3b8;
 }
@@ -335,6 +587,19 @@ button:disabled {
 @media (max-width: 900px) {
   .two-col {
     grid-template-columns: 1fr;
+  }
+
+  .section-row,
+  .top-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .floating-send {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    width: calc(100% - 32px);
   }
 }
 </style>

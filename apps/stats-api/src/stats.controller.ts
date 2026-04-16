@@ -18,6 +18,43 @@ export class StatsController {
     return this.statsService.dashboardOverview();
   }
 
+  @Get('dashboard/monthly-heatmap')
+  monthlyHeatmap(@Query('year') year?: string): Promise<Record<string, unknown>> {
+    return this.statsService.monthlyHeatmap(year);
+  }
+
+  @Get('dashboard/months/:monthKey/users')
+  monthUsers(
+    @Param('monthKey') monthKey: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
+    @Query('limit') limit = '50',
+    @Query('offset') offset = '0',
+  ): Promise<Record<string, unknown>> {
+    return this.statsService.monthUsers(
+      monthKey,
+      sortBy,
+      sortOrder,
+      Number(limit),
+      Number(offset),
+    );
+  }
+
+  @Get('dashboard/current-month/missing-image-users')
+  currentMonthMissingImageUsers(
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
+    @Query('limit') limit = '50',
+    @Query('offset') offset = '0',
+  ): Promise<Record<string, unknown>> {
+    return this.statsService.currentMonthMissingImageUsers(
+      sortBy,
+      sortOrder,
+      Number(limit),
+      Number(offset),
+    );
+  }
+
   @Get('stats/today')
   today(
     @Query('date') date?: string,

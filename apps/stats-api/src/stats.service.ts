@@ -1,13 +1,44 @@
-import { Injectable } from '@nestjs/common';
-import { MediaStatus } from '@prisma/client';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { MediaStatus, UserTuStatus } from '@prisma/client';
 import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { stagingUsage } from '@shared/utils/disk';
 import { logger } from '@shared/utils/logger';
 
+type SortOrder = 'asc' | 'desc';
+
+type ActiveUser = {
+  id: number;
+  tuId: string;
+  tuName: string;
+  telegramUserId: bigint;
+  telegramChatId: bigint;
+  username: string | null;
+};
+
+type UserMediaBucket = {
+  photo: number;
+  video: number;
+  document: number;
+  total: number;
+};
+
+type MonthWindow = {
+  year: number;
+  monthIndex: number;
+  monthKey: string;
+  label: string;
+  startUtc: Date;
+  endUtc: Date;
+};
+
 @Injectable()
 export class StatsService {
+  private readonly analyticsTimezone = 'Asia/Ho_Chi_Minh';
+  private readonly analyticsOffsetMs = 7 * 60 * 60 * 1000;
+  private readonly monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
@@ -34,6 +65,178 @@ export class StatsService {
     }
     const maybeMessage = 'message' in err ? String((err as Record<string, unknown>).message ?? '') : '';
     return maybeMessage.includes('message_campaign');
+  }
+
+  private shiftToAnalyticsTimezone(value: Date): Date {
+    return new Date(value.getTime() + this.analyticsOffsetMs);
+  }
+
+  private currentAnalyticsYear(): number {
+    return this.shiftToAnalyticsTimezone(new Date()).getUTCFullYear();
+  }
+
+  private currentAnalyticsMonthKey(): string {
+    const shifted = this.shiftToAnalyticsTimezone(new Date());
+    return this.formatMonthKey(shifted.getUTCFullYear(), shifted.getUTCMonth());
+  }
+
+  private formatMonthKey(year: number, monthIndex: number): string {
+    return `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+  }
+
+  private formatMonthLabel(year: number, monthIndex: number): string {
+    return `${this.monthLabels[monthIndex]} ${year}`;
+  }
+
+  private monthWindowFromParts(year: number, monthIndex: number): MonthWindow {
+    const startUtc = new Date(Date.UTC(year, monthIndex, 1) - this.analyticsOffsetMs);
+    const nextMonthStartUtc = new Date(Date.UTC(year, monthIndex + 1, 1) - this.analyticsOffsetMs);
+
+    return {
+      year,
+      monthIndex,
+      monthKey: this.formatMonthKey(year, monthIndex),
+      label: this.formatMonthLabel(year, monthIndex),
+      startUtc,
+      endUtc: new Date(nextMonthStartUtc.getTime() - 1),
+    };
+  }
+
+  private parseYear(yearRaw?: string): number {
+    if (!yearRaw || !yearRaw.trim()) {
+      return this.currentAnalyticsYear();
+    }
+
+    if (!/^\d{4}$/.test(yearRaw.trim())) {
+      throw new BadRequestException('year must be in YYYY format');
+    }
+
+    return Number(yearRaw);
+  }
+
+  private parseMonthKey(monthKey: string): MonthWindow {
+    const normalized = monthKey.trim();
+    const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(normalized);
+    if (!match) {
+      throw new BadRequestException('monthKey must be in YYYY-MM format');
+    }
+
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+    return this.monthWindowFromParts(year, monthIndex);
+  }
+
+  private normalizeSortOrder(sortOrder?: string): SortOrder {
+    return sortOrder === 'asc' ? 'asc' : 'desc';
+  }
+
+  private normalizeLimit(limitRaw?: number): number {
+    const limit = Number(limitRaw);
+    if (!Number.isFinite(limit)) {
+      return 50;
+    }
+    return Math.min(Math.max(Math.trunc(limit), 1), 500);
+  }
+
+  private normalizeOffset(offsetRaw?: number): number {
+    const offset = Number(offsetRaw);
+    if (!Number.isFinite(offset)) {
+      return 0;
+    }
+    return Math.max(Math.trunc(offset), 0);
+  }
+
+  private compareValues(a: string | number | null, b: string | number | null, sortOrder: SortOrder): number {
+    if (typeof a === 'number' && typeof b === 'number') {
+      return sortOrder === 'asc' ? a - b : b - a;
+    }
+
+    const left = String(a ?? '').toLowerCase();
+    const right = String(b ?? '').toLowerCase();
+    const comparison = left.localeCompare(right);
+    return sortOrder === 'asc' ? comparison : -comparison;
+  }
+
+  private compareMonthUserRows(
+    a: Record<string, unknown>,
+    b: Record<string, unknown>,
+    sortBy: string,
+    sortOrder: SortOrder,
+  ): number {
+    const primary = this.compareValues(
+      (a[sortBy] as string | number | null | undefined) ?? null,
+      (b[sortBy] as string | number | null | undefined) ?? null,
+      sortOrder,
+    );
+    if (primary !== 0) {
+      return primary;
+    }
+
+    return this.compareValues(
+      (a.tu_name as string | null | undefined) ?? null,
+      (b.tu_name as string | null | undefined) ?? null,
+      'asc',
+    );
+  }
+
+  private compositeUserKey(senderId: bigint, chatId: bigint): string {
+    return `${senderId.toString()}_${chatId.toString()}`;
+  }
+
+  private monthKeyFromDate(value: Date): string {
+    const shifted = this.shiftToAnalyticsTimezone(value);
+    return this.formatMonthKey(shifted.getUTCFullYear(), shifted.getUTCMonth());
+  }
+
+  private async loadActiveUsers(): Promise<ActiveUser[]> {
+    return this.prisma.userTu.findMany({
+      where: { status: UserTuStatus.active },
+      select: {
+        id: true,
+        tuId: true,
+        tuName: true,
+        telegramUserId: true,
+        telegramChatId: true,
+        username: true,
+      },
+      orderBy: { tuName: 'asc' },
+    });
+  }
+
+  private async loadUploadedMediaBuckets(window: MonthWindow): Promise<Map<string, UserMediaBucket>> {
+    const rows = await this.prisma.mediaItem.groupBy({
+      by: ['senderId', 'chatId', 'mediaType'],
+      where: {
+        status: MediaStatus.uploaded,
+        date: { gte: window.startUtc, lte: window.endUtc },
+        senderId: { not: null },
+      },
+      _count: { id: true },
+    });
+
+    const buckets = new Map<string, UserMediaBucket>();
+    for (const row of rows) {
+      if (!row.senderId) {
+        continue;
+      }
+
+      const key = this.compositeUserKey(row.senderId, row.chatId);
+      const bucket = buckets.get(key) ?? { photo: 0, video: 0, document: 0, total: 0 };
+      const count = Number(row._count.id);
+
+      if (row.mediaType === 'photo') {
+        bucket.photo += count;
+      } else if (row.mediaType === 'video') {
+        bucket.video += count;
+      } else if (row.mediaType === 'document') {
+        bucket.document += count;
+      }
+
+      bucket.total += count;
+      buckets.set(key, bucket);
+    }
+
+    return buckets;
   }
 
   async overview(): Promise<Record<string, unknown>> {
@@ -113,7 +316,6 @@ export class StatsService {
 
     const [users, counts] = await Promise.all([
       this.prisma.userTu.findMany({ where: { status: 'active' } }),
-      // Single GROUP BY including status so we can derive both media counts and upload outcomes
       this.prisma.mediaItem.groupBy({
         by: ['senderId', 'chatId', 'mediaType', 'status'],
         where: { date: { gte: dayStart, lte: dayEnd } },
@@ -128,18 +330,18 @@ export class StatsService {
       if (!row.senderId) continue;
       const key = `${row.senderId}_${row.chatId}`;
       if (!countMap.has(key)) countMap.set(key, { photo: 0, video: 0, success: 0, failed: 0 });
-      const b = countMap.get(key)!;
-      const n = row._count.id;
+      const bucket = countMap.get(key)!;
+      const count = row._count.id;
 
-      if (row.mediaType === 'photo') b.photo += n;
-      if (row.mediaType === 'video') b.video += n;
-      if (row.status === 'uploaded') b.success += n;
-      if (row.status === 'failed')   b.failed  += n;
+      if (row.mediaType === 'photo') bucket.photo += count;
+      if (row.mediaType === 'video') bucket.video += count;
+      if (row.status === 'uploaded') bucket.success += count;
+      if (row.status === 'failed') bucket.failed += count;
     }
 
     return users.map((user) => {
       const key = `${user.telegramUserId}_${user.telegramChatId}`;
-      const b = countMap.get(key) ?? { photo: 0, video: 0, success: 0, failed: 0 };
+      const bucket = countMap.get(key) ?? { photo: 0, video: 0, success: 0, failed: 0 };
       return {
         tu_id: user.tuId,
         tu_name: user.tuName,
@@ -148,17 +350,195 @@ export class StatsService {
         telegram_username: user.username ?? null,
         telegram_chat_id: user.telegramChatId.toString(),
         media: {
-          image: b.photo,
-          video: b.video,
-          total: b.photo + b.video,
+          image: bucket.photo,
+          video: bucket.video,
+          total: bucket.photo + bucket.video,
         },
         status_uploaded: {
-          success: b.success,
-          failed:  b.failed,
+          success: bucket.success,
+          failed: bucket.failed,
         },
         date: targetDate,
       };
     });
+  }
+
+  async monthlyHeatmap(yearRaw?: string): Promise<Record<string, unknown>> {
+    const year = this.parseYear(yearRaw);
+    const yearStartUtc = new Date(Date.UTC(year, 0, 1) - this.analyticsOffsetMs);
+    const nextYearStartUtc = new Date(Date.UTC(year + 1, 0, 1) - this.analyticsOffsetMs);
+
+    const rows = await this.prisma.mediaItem.findMany({
+      where: {
+        status: MediaStatus.uploaded,
+        date: {
+          gte: yearStartUtc,
+          lt: nextYearStartUtc,
+        },
+      },
+      select: {
+        date: true,
+        senderId: true,
+        chatId: true,
+      },
+    });
+
+    const monthMap = new Map<string, { label: string; total_media: number; uploaders: Set<string> }>();
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      const window = this.monthWindowFromParts(year, monthIndex);
+      monthMap.set(window.monthKey, {
+        label: window.label,
+        total_media: 0,
+        uploaders: new Set<string>(),
+      });
+    }
+
+    for (const row of rows) {
+      const monthKey = this.monthKeyFromDate(row.date);
+      const bucket = monthMap.get(monthKey);
+      if (!bucket) {
+        continue;
+      }
+
+      bucket.total_media += 1;
+      if (row.senderId) {
+        bucket.uploaders.add(this.compositeUserKey(row.senderId, row.chatId));
+      }
+    }
+
+    return {
+      year,
+      timezone: this.analyticsTimezone,
+      months: Array.from(monthMap.entries()).map(([monthKey, value]) => ({
+        month_key: monthKey,
+        label: value.label,
+        total_media: value.total_media,
+        active_users: value.uploaders.size,
+      })),
+    };
+  }
+
+  async monthUsers(
+    monthKey: string,
+    sortByRaw?: string,
+    sortOrderRaw?: string,
+    limitRaw?: number,
+    offsetRaw?: number,
+  ): Promise<Record<string, unknown>> {
+    const window = this.parseMonthKey(monthKey);
+    const sortBy = sortByRaw ?? 'total_media';
+    const sortOrder = this.normalizeSortOrder(sortOrderRaw);
+    const limit = this.normalizeLimit(limitRaw);
+    const offset = this.normalizeOffset(offsetRaw);
+
+    const allowedSortFields = new Set([
+      'tu_name',
+      'telegram_username',
+      'total_media',
+      'image_count',
+      'video_count',
+      'document_count',
+    ]);
+    if (!allowedSortFields.has(sortBy)) {
+      throw new BadRequestException('unsupported sortBy value');
+    }
+
+    const [activeUsers, buckets] = await Promise.all([
+      this.loadActiveUsers(),
+      this.loadUploadedMediaBuckets(window),
+    ]);
+
+    const items = activeUsers
+      .map((user) => {
+        const key = this.compositeUserKey(user.telegramUserId, user.telegramChatId);
+        const bucket = buckets.get(key) ?? { photo: 0, video: 0, document: 0, total: 0 };
+
+        return {
+          user_tu_id: user.id,
+          tu_id: user.tuId,
+          tu_name: user.tuName,
+          telegram_username: user.username,
+          telegram_chat_id: user.telegramChatId.toString(),
+          total_media: bucket.total,
+          image_count: bucket.photo,
+          video_count: bucket.video,
+          document_count: bucket.document,
+        };
+      })
+      .sort((a, b) => this.compareMonthUserRows(a, b, sortBy, sortOrder));
+
+    const paginatedItems = items.slice(offset, offset + limit);
+    const totalMedia = items.reduce((sum, item) => sum + item.total_media, 0);
+
+    return {
+      month: window.monthKey,
+      timezone: this.analyticsTimezone,
+      total: items.length,
+      limit,
+      offset,
+      summary: {
+        total_media: totalMedia,
+        active_users: activeUsers.length,
+      },
+      items: paginatedItems,
+    };
+  }
+
+  async currentMonthMissingImageUsers(
+    sortByRaw?: string,
+    sortOrderRaw?: string,
+    limitRaw?: number,
+    offsetRaw?: number,
+  ): Promise<Record<string, unknown>> {
+    const window = this.parseMonthKey(this.currentAnalyticsMonthKey());
+    const sortBy = sortByRaw ?? 'tu_name';
+    const sortOrder = this.normalizeSortOrder(sortOrderRaw);
+    const limit = this.normalizeLimit(limitRaw);
+    const offset = this.normalizeOffset(offsetRaw);
+
+    const allowedSortFields = new Set([
+      'tu_name',
+      'telegram_username',
+      'telegram_chat_id',
+    ]);
+    if (!allowedSortFields.has(sortBy)) {
+      throw new BadRequestException('unsupported sortBy value');
+    }
+
+    const [activeUsers, buckets] = await Promise.all([
+      this.loadActiveUsers(),
+      this.loadUploadedMediaBuckets(window),
+    ]);
+
+    const items = activeUsers
+      .map((user) => {
+        const key = this.compositeUserKey(user.telegramUserId, user.telegramChatId);
+        const bucket = buckets.get(key);
+        const imageUploadCount = bucket?.photo ?? 0;
+        if (imageUploadCount > 0) {
+          return null;
+        }
+
+        return {
+          user_tu_id: user.id,
+          tu_id: user.tuId,
+          tu_name: user.tuName,
+          telegram_username: user.username,
+          telegram_chat_id: user.telegramChatId.toString(),
+          image_upload_count: imageUploadCount,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .sort((a, b) => this.compareMonthUserRows(a, b, sortBy, sortOrder));
+
+    return {
+      month: window.monthKey,
+      timezone: this.analyticsTimezone,
+      total: items.length,
+      limit,
+      offset,
+      items: items.slice(offset, offset + limit),
+    };
   }
 
   async dashboardOverview(): Promise<Record<string, unknown>> {
@@ -286,7 +666,7 @@ export class StatsService {
       }
     }
 
-    const totalReceived = Array.from(statusCounts.values()).reduce((acc, n) => acc + n, 0);
+    const totalReceived = Array.from(statusCounts.values()).reduce((acc, count) => acc + count, 0);
 
     return {
       generated_at: new Date().toISOString(),
@@ -330,5 +710,4 @@ export class StatsService {
       campaigns,
     };
   }
-
 }

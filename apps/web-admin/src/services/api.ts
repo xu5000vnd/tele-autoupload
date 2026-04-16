@@ -1,4 +1,5 @@
 const TOKEN_KEY = 'stats_api_token';
+const DASHBOARD_SELECTION_KEY = 'dashboard:selected-target-ids';
 
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? '';
@@ -6,6 +7,51 @@ export function getToken(): string {
 
 export function setToken(token: string): void {
   localStorage.setItem(TOKEN_KEY, token);
+}
+
+function hasSessionStorage(): boolean {
+  return typeof window !== 'undefined' && typeof window.sessionStorage !== 'undefined';
+}
+
+export function storeDashboardSelectedTargetIds(ids: number[]): void {
+  if (!hasSessionStorage()) {
+    return;
+  }
+
+  const sanitized = [...new Set(ids)].filter((id) => Number.isInteger(id) && id > 0);
+  window.sessionStorage.setItem(DASHBOARD_SELECTION_KEY, JSON.stringify(sanitized));
+}
+
+export function readDashboardSelectedTargetIds(): number[] {
+  if (!hasSessionStorage()) {
+    return [];
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(DASHBOARD_SELECTION_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((value) => Number(value))
+      .filter((id) => Number.isInteger(id) && id > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function clearDashboardSelectedTargetIds(): void {
+  if (!hasSessionStorage()) {
+    return;
+  }
+
+  window.sessionStorage.removeItem(DASHBOARD_SELECTION_KEY);
 }
 
 function buildHeaders(): HeadersInit {
@@ -127,4 +173,60 @@ export type DashboardOverview = {
     created_at: string;
     updated_at: string | null;
   }>;
+};
+
+export type MonthlyHeatmapMonth = {
+  month_key: string;
+  label: string;
+  total_media: number;
+  active_users: number;
+};
+
+export type MonthlyHeatmapResponse = {
+  year: number;
+  timezone: string;
+  months: MonthlyHeatmapMonth[];
+};
+
+export type DashboardMonthUser = {
+  user_tu_id: number;
+  tu_id: string;
+  tu_name: string;
+  telegram_username: string | null;
+  telegram_chat_id: string;
+  total_media: number;
+  image_count: number;
+  video_count: number;
+  document_count: number;
+};
+
+export type DashboardMonthUsersResponse = {
+  month: string;
+  timezone: string;
+  total: number;
+  limit: number;
+  offset: number;
+  summary: {
+    total_media: number;
+    active_users: number;
+  };
+  items: DashboardMonthUser[];
+};
+
+export type MissingImageUser = {
+  user_tu_id: number;
+  tu_id: string;
+  tu_name: string;
+  telegram_username: string | null;
+  telegram_chat_id: string;
+  image_upload_count: number;
+};
+
+export type MissingImageUsersResponse = {
+  month: string;
+  timezone: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: MissingImageUser[];
 };

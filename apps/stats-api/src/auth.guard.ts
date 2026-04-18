@@ -1,17 +1,15 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { appConfig } from '@shared/config/env';
+import { AuthService } from './auth.service';
 
 @Injectable()
 export class BearerAuthGuard implements CanActivate {
-  canActivate(context: ExecutionContext): boolean {
-    return true;
-    if (!appConfig.statsApiAuthToken) {
-      return true;
-    }
+  constructor(private readonly authService: AuthService) {}
 
+  canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<{ headers: Record<string, string | undefined> }>();
     const authHeader = request.headers.authorization ?? '';
-    if (authHeader !== `Bearer ${appConfig.statsApiAuthToken}`) {
+
+    if (!this.authService.isValidBearerToken(authHeader)) {
       throw new UnauthorizedException('invalid token');
     }
 

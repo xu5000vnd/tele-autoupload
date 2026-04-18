@@ -1,4 +1,5 @@
 const TOKEN_KEY = 'stats_api_token';
+const AUTH_USERNAME_KEY = 'stats_api_username';
 const DASHBOARD_SELECTION_KEY = 'dashboard:selected-target-ids';
 
 export function getToken(): string {
@@ -7,6 +8,24 @@ export function getToken(): string {
 
 export function setToken(token: string): void {
   localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function getAuthUsername(): string {
+  return localStorage.getItem(AUTH_USERNAME_KEY) ?? '';
+}
+
+export function setAuthSession(input: { token: string; username: string }): void {
+  setToken(input.token);
+  localStorage.setItem(AUTH_USERNAME_KEY, input.username);
+}
+
+export function clearAuthSession(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(AUTH_USERNAME_KEY);
+}
+
+export function isAuthenticated(): boolean {
+  return Boolean(getToken().trim());
 }
 
 function hasSessionStorage(): boolean {
@@ -84,6 +103,17 @@ export async function apiPost<T>(url: string, payload: unknown): Promise<T> {
   }
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
+
+export type LoginRequest = {
+  username: string;
+  password: string;
+};
+
+export type LoginResponse = {
+  ok: boolean;
+  token: string;
+  username: string;
+};
 
 export async function fileToBase64(file: File): Promise<{ fileName: string; mimeType?: string; base64: string }> {
   return new Promise((resolve, reject) => {

@@ -32,6 +32,8 @@ const baseSchema = z.object({
   RECONCILIATION_INTERVAL_MIN: z.coerce.number().int().positive().default(10),
   STATS_API_PORT: z.coerce.number().int().positive().default(3100),
   STATS_API_AUTH_TOKEN: z.string().default(''),
+  ADMIN_WEB_USERNAME: z.string().default(''),
+  ADMIN_WEB_PASSWORD: z.string().default(''),
   STATS_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   BOT_TOKEN: z.string().optional(),
   BOT_REPORT_CHAT_ID: z.string().optional(),
@@ -80,6 +82,8 @@ export function parseEnv(): {
   reconciliationIntervalMin: number;
   statsApiPort: number;
   statsApiAuthToken: string;
+  adminWebUsername: string;
+  adminWebPassword: string;
   statsRetentionDays: number;
   botToken?: string;
   botReportChatId?: string;
@@ -134,6 +138,8 @@ export function parseEnv(): {
     reconciliationIntervalMin: env.RECONCILIATION_INTERVAL_MIN,
     statsApiPort: env.STATS_API_PORT,
     statsApiAuthToken: env.STATS_API_AUTH_TOKEN,
+    adminWebUsername: env.ADMIN_WEB_USERNAME,
+    adminWebPassword: env.ADMIN_WEB_PASSWORD,
     statsRetentionDays: env.STATS_RETENTION_DAYS,
     botToken: env.BOT_TOKEN,
     botReportChatId: env.BOT_REPORT_CHAT_ID,

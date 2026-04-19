@@ -5,6 +5,7 @@ import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { stagingUsage } from '@shared/utils/disk';
 import { logger } from '@shared/utils/logger';
+import { REPORTING_CYCLE_CLOSE_DAY, reportingCycleStartDay } from './reporting-cycle';
 
 type SortOrder = 'asc' | 'desc';
 
@@ -31,6 +32,8 @@ type MonthWindow = {
   label: string;
   startUtc: Date;
   endUtc: Date;
+  cycleStartDate: string;
+  cycleEndDate: string;
 };
 
 @Injectable()
@@ -38,6 +41,8 @@ export class StatsService {
   private readonly analyticsTimezone = 'Asia/Ho_Chi_Minh';
   private readonly analyticsOffsetMs = 7 * 60 * 60 * 1000;
   private readonly monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  private readonly reportingCycleCloseDay = REPORTING_CYCLE_CLOSE_DAY;
+  private readonly reportingCycleStartDay = reportingCycleStartDay(this.reportingCycleCloseDay);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -71,13 +76,16 @@ export class StatsService {
     return new Date(value.getTime() + this.analyticsOffsetMs);
   }
 
+  private formatAnalyticsDate(value: Date): string {
+    return this.shiftToAnalyticsTimezone(value).toISOString().slice(0, 10);
+  }
+
   private currentAnalyticsYear(): number {
-    return this.shiftToAnalyticsTimezone(new Date()).getUTCFullYear();
+    return Number(this.currentAnalyticsMonthKey().slice(0, 4));
   }
 
   private currentAnalyticsMonthKey(): string {
-    const shifted = this.shiftToAnalyticsTimezone(new Date());
-    return this.formatMonthKey(shifted.getUTCFullYear(), shifted.getUTCMonth());
+    return this.monthKeyFromDate(new Date());
   }
 
   private formatMonthKey(year: number, monthIndex: number): string {
@@ -89,8 +97,12 @@ export class StatsService {
   }
 
   private monthWindowFromParts(year: number, monthIndex: number): MonthWindow {
-    const startUtc = new Date(Date.UTC(year, monthIndex, 1) - this.analyticsOffsetMs);
-    const nextMonthStartUtc = new Date(Date.UTC(year, monthIndex + 1, 1) - this.analyticsOffsetMs);
+    const startUtc = new Date(
+      Date.UTC(year, monthIndex - 1, this.reportingCycleStartDay) - this.analyticsOffsetMs,
+    );
+    const nextCycleStartUtc = new Date(
+      Date.UTC(year, monthIndex, this.reportingCycleStartDay) - this.analyticsOffsetMs,
+    );
 
     return {
       year,
@@ -98,7 +110,9 @@ export class StatsService {
       monthKey: this.formatMonthKey(year, monthIndex),
       label: this.formatMonthLabel(year, monthIndex),
       startUtc,
-      endUtc: new Date(nextMonthStartUtc.getTime() - 1),
+      endUtc: new Date(nextCycleStartUtc.getTime() - 1),
+      cycleStartDate: this.formatAnalyticsDate(startUtc),
+      cycleEndDate: this.formatAnalyticsDate(new Date(nextCycleStartUtc.getTime() - 1)),
     };
   }
 
@@ -185,7 +199,16 @@ export class StatsService {
 
   private monthKeyFromDate(value: Date): string {
     const shifted = this.shiftToAnalyticsTimezone(value);
-    return this.formatMonthKey(shifted.getUTCFullYear(), shifted.getUTCMonth());
+    const dayOfMonth = shifted.getUTCDate();
+    const labelDate = new Date(
+      Date.UTC(
+        shifted.getUTCFullYear(),
+        shifted.getUTCMonth() + (dayOfMonth > this.reportingCycleCloseDay ? 1 : 0),
+        1,
+      ),
+    );
+
+    return this.formatMonthKey(labelDate.getUTCFullYear(), labelDate.getUTCMonth());
   }
 
   private async loadActiveUsers(): Promise<ActiveUser[]> {
@@ -365,15 +388,15 @@ export class StatsService {
 
   async monthlyHeatmap(yearRaw?: string): Promise<Record<string, unknown>> {
     const year = this.parseYear(yearRaw);
-    const yearStartUtc = new Date(Date.UTC(year, 0, 1) - this.analyticsOffsetMs);
-    const nextYearStartUtc = new Date(Date.UTC(year + 1, 0, 1) - this.analyticsOffsetMs);
+    const firstWindow = this.monthWindowFromParts(year, 0);
+    const lastWindow = this.monthWindowFromParts(year, 11);
 
     const rows = await this.prisma.mediaItem.findMany({
       where: {
         status: MediaStatus.uploaded,
         date: {
-          gte: yearStartUtc,
-          lt: nextYearStartUtc,
+          gte: firstWindow.startUtc,
+          lte: lastWindow.endUtc,
         },
       },
       select: {
@@ -409,11 +432,20 @@ export class StatsService {
     return {
       year,
       timezone: this.analyticsTimezone,
+      cycle_close_day: this.reportingCycleCloseDay,
       months: Array.from(monthMap.entries()).map(([monthKey, value]) => ({
         month_key: monthKey,
         label: value.label,
         total_media: value.total_media,
         active_users: value.uploaders.size,
+        cycle_start: this.monthWindowFromParts(
+          Number(monthKey.slice(0, 4)),
+          Number(monthKey.slice(5, 7)) - 1,
+        ).cycleStartDate,
+        cycle_end: this.monthWindowFromParts(
+          Number(monthKey.slice(0, 4)),
+          Number(monthKey.slice(5, 7)) - 1,
+        ).cycleEndDate,
       })),
     };
   }
@@ -473,6 +505,9 @@ export class StatsService {
     return {
       month: window.monthKey,
       timezone: this.analyticsTimezone,
+      cycle_close_day: this.reportingCycleCloseDay,
+      cycle_start: window.cycleStartDate,
+      cycle_end: window.cycleEndDate,
       total: items.length,
       limit,
       offset,
@@ -534,6 +569,9 @@ export class StatsService {
     return {
       month: window.monthKey,
       timezone: this.analyticsTimezone,
+      cycle_close_day: this.reportingCycleCloseDay,
+      cycle_start: window.cycleStartDate,
+      cycle_end: window.cycleEndDate,
       total: items.length,
       limit,
       offset,

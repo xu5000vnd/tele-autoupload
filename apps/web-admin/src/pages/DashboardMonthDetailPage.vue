@@ -1,9 +1,14 @@
 <template>
   <section class="stack">
     <div class="card top-row">
-      <div>
+      <div class="header-copy">
         <h2>Month Detail</h2>
         <div class="muted">{{ formatMonthLabel(detail?.month ?? monthKey) }}</div>
+        <div class="header-meta" v-if="detail">
+          <span class="pill">{{ formatCycleRange(detail.cycle_start, detail.cycle_end) }}</span>
+          <span class="pill">{{ formatCycleRule(detail.cycle_close_day) }}</span>
+          <span class="pill">{{ detail.timezone }}</span>
+        </div>
       </div>
       <div class="actions">
         <RouterLink class="back-link" to="/dashboard">Back to Dashboard</RouterLink>
@@ -33,9 +38,9 @@
 
       <div class="card">
         <div class="top-row">
-          <div>
+          <div class="section-copy">
             <h3>User Upload Totals</h3>
-            <div class="muted">Sortable monthly totals in {{ detail.timezone }}</div>
+            <div class="muted">Sortable reporting-cycle totals for every active user</div>
           </div>
           <div class="actions">
             <button class="btn-secondary" type="button" @click="selectAllVisible" :disabled="!detail.items.length">
@@ -129,6 +134,7 @@ import {
   storeDashboardSelectedTargetIds,
   type DashboardMonthUsersResponse,
 } from '../services/api';
+import { formatCycleRange, formatCycleRule } from '../utils/reportingCycle';
 
 type SortField =
   | 'tu_name'
@@ -252,6 +258,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .actions {
@@ -264,6 +271,18 @@ onMounted(() => {
 .back-link {
   color: #93c5fd;
   text-decoration: none;
+}
+
+.header-copy,
+.section-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .summary-grid {
@@ -286,6 +305,16 @@ onMounted(() => {
 .summary-value {
   font-size: 28px;
   font-weight: 700;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #172033;
+  color: #bfdbfe;
+  font-size: 12px;
 }
 
 .table-wrap {

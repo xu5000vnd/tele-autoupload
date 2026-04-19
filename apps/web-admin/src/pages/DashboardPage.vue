@@ -43,11 +43,14 @@
 
       <div class="card">
         <div class="section-row">
-          <div>
+          <div class="section-heading">
             <h3>Monthly Activity</h3>
-            <div class="muted">Uploaded media by month in {{ heatmap?.year ?? currentYear }}</div>
+            <div class="muted">Uploaded media by reporting cycle in {{ heatmap?.year ?? currentYear }}</div>
           </div>
-          <span class="pill">{{ heatmap?.timezone ?? 'Asia/Ho_Chi_Minh' }}</span>
+          <div class="section-badges">
+            <span class="pill">{{ formatCycleRule(heatmap?.cycle_close_day) }}</span>
+            <span class="pill">{{ heatmap?.timezone ?? 'Asia/Ho_Chi_Minh' }}</span>
+          </div>
         </div>
 
         <div class="heat-grid" v-if="heatmap?.months?.length">
@@ -59,8 +62,9 @@
             @click="openMonth(month.month_key)"
           >
             <span class="heat-label">{{ month.label }}</span>
-            <strong>{{ month.total_media }}</strong>
-            <span class="muted">{{ month.active_users }} active</span>
+            <strong class="heat-total">{{ month.total_media }}</strong>
+            <span class="cycle-chip">{{ formatCycleRange(month.cycle_start, month.cycle_end, 'compact') }}</span>
+            <span class="muted heat-foot">{{ month.active_users }} active</span>
           </button>
         </div>
         <div v-else class="muted">No monthly data available yet.</div>
@@ -68,9 +72,12 @@
 
       <div class="card">
         <div class="section-row">
-          <div>
+          <div class="section-heading">
             <h3>No Image Upload This Month</h3>
-            <div class="muted">Active users with 0 uploaded photos in {{ formatMonthLabel(missingUsers?.month) }}</div>
+            <div class="muted">
+              Active users with 0 uploaded photos in {{ formatMonthLabel(missingUsers?.month) }}
+              <span v-if="missingUsers">({{ formatCycleRange(missingUsers.cycle_start, missingUsers.cycle_end) }})</span>
+            </div>
           </div>
           <div class="selection-tools">
             <button class="btn-secondary" type="button" @click="selectAllMissing" :disabled="!missingUsers?.items.length">
@@ -256,6 +263,7 @@ import {
   type MissingImageUsersResponse,
   type MonthlyHeatmapResponse,
 } from '../services/api';
+import { formatCycleRange, formatCycleRule } from '../utils/reportingCycle';
 
 const router = useRouter();
 const overview = ref<DashboardOverview | null>(null);
@@ -378,11 +386,23 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 h2,
 h3 {
   margin: 0;
+}
+
+.section-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.section-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .metrics-grid {
@@ -440,25 +460,47 @@ h3 {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  min-height: 120px;
+  gap: 8px;
+  min-height: 136px;
   padding: 14px;
   border-radius: 12px;
   border: 1px solid #31415a;
   background: #0f172a;
   color: #e5e7eb;
   cursor: pointer;
-  transition: transform 140ms ease, border-color 140ms ease;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .heat-cell:hover {
   transform: translateY(-1px);
   border-color: #60a5fa;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.28);
 }
 
 .heat-label {
   font-size: 13px;
   color: #bfdbfe;
+}
+
+.heat-total {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.cycle-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.45);
+  color: #dbeafe;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.heat-foot {
+  margin-top: auto;
+  font-size: 12px;
 }
 
 .heat-0 {

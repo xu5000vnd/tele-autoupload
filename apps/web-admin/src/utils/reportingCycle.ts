@@ -1,4 +1,4 @@
-export const DEFAULT_REPORTING_CYCLE_CLOSE_DAY = 20;
+export const DEFAULT_REPORTING_CYCLE_START_DAY = 20;
 
 function parseDate(value: string): Date | null {
   const date = new Date(`${value}T00:00:00`);
@@ -22,7 +22,7 @@ export function formatCycleRange(start: string, end: string, mode: 'compact' | '
   return `Cycle ${startLabel} - ${endLabel}`;
 }
 
-export function formatCycleRule(closeDay?: number | null): string {
-  const day = Number.isInteger(closeDay) ? Number(closeDay) : DEFAULT_REPORTING_CYCLE_CLOSE_DAY;
-  return `Closes on day ${day}`;
+export function formatCycleRule(startDay?: number | null): string {
+  const day = Number.isInteger(startDay) ? Number(startDay) : DEFAULT_REPORTING_CYCLE_START_DAY;
+  return `Next cycle starts day ${day}`;
 }

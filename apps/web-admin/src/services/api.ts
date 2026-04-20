@@ -217,7 +217,7 @@ export type MonthlyHeatmapMonth = {
 export type MonthlyHeatmapResponse = {
   year: number;
   timezone: string;
-  cycle_close_day: number;
+  cycle_start_day: number;
   months: MonthlyHeatmapMonth[];
 };
 
@@ -236,7 +236,7 @@ export type DashboardMonthUser = {
 export type DashboardMonthUsersResponse = {
   month: string;
   timezone: string;
-  cycle_close_day: number;
+  cycle_start_day: number;
   cycle_start: string;
   cycle_end: string;
   total: number;
@@ -261,7 +261,7 @@ export type MissingImageUser = {
 export type MissingImageUsersResponse = {
   month: string;
   timezone: string;
-  cycle_close_day: number;
+  cycle_start_day: number;
   cycle_start: string;
   cycle_end: string;
   total: number;

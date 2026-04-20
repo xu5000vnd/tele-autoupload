@@ -1,5 +1,5 @@
-export const REPORTING_CYCLE_CLOSE_DAY = 20;
+export const REPORTING_CYCLE_START_DAY = 20;
 
-export function reportingCycleStartDay(closeDay = REPORTING_CYCLE_CLOSE_DAY): number {
-  return closeDay + 1;
+export function reportingCyclePreviousMonthEndDay(startDay = REPORTING_CYCLE_START_DAY): number {
+  return startDay - 1;
 }

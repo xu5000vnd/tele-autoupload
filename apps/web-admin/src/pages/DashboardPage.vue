@@ -48,7 +48,7 @@
             <div class="muted">Uploaded media by reporting cycle in {{ heatmap?.year ?? currentYear }}</div>
           </div>
           <div class="section-badges">
-            <span class="pill">{{ formatCycleRule(heatmap?.cycle_close_day) }}</span>
+            <span class="pill">{{ formatCycleRule(heatmap?.cycle_start_day) }}</span>
             <span class="pill">{{ heatmap?.timezone ?? 'Asia/Ho_Chi_Minh' }}</span>
           </div>
         </div>

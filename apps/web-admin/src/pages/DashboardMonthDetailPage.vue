@@ -6,7 +6,7 @@
         <div class="muted">{{ formatMonthLabel(detail?.month ?? monthKey) }}</div>
         <div class="header-meta" v-if="detail">
           <span class="pill">{{ formatCycleRange(detail.cycle_start, detail.cycle_end) }}</span>
-          <span class="pill">{{ formatCycleRule(detail.cycle_close_day) }}</span>
+          <span class="pill">{{ formatCycleRule(detail.cycle_start_day) }}</span>
           <span class="pill">{{ detail.timezone }}</span>
         </div>
       </div>

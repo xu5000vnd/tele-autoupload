@@ -5,7 +5,7 @@ import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { stagingUsage } from '@shared/utils/disk';
 import { logger } from '@shared/utils/logger';
-import { REPORTING_CYCLE_CLOSE_DAY, reportingCycleStartDay } from './reporting-cycle';
+import { REPORTING_CYCLE_START_DAY } from './reporting-cycle';
 
 type SortOrder = 'asc' | 'desc';
 
@@ -41,8 +41,7 @@ export class StatsService {
   private readonly analyticsTimezone = 'Asia/Ho_Chi_Minh';
   private readonly analyticsOffsetMs = 7 * 60 * 60 * 1000;
   private readonly monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  private readonly reportingCycleCloseDay = REPORTING_CYCLE_CLOSE_DAY;
-  private readonly reportingCycleStartDay = reportingCycleStartDay(this.reportingCycleCloseDay);
+  private readonly reportingCycleStartDay = REPORTING_CYCLE_START_DAY;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -203,7 +202,7 @@ export class StatsService {
     const labelDate = new Date(
       Date.UTC(
         shifted.getUTCFullYear(),
-        shifted.getUTCMonth() + (dayOfMonth > this.reportingCycleCloseDay ? 1 : 0),
+        shifted.getUTCMonth() + (dayOfMonth >= this.reportingCycleStartDay ? 1 : 0),
         1,
       ),
     );
@@ -432,7 +431,7 @@ export class StatsService {
     return {
       year,
       timezone: this.analyticsTimezone,
-      cycle_close_day: this.reportingCycleCloseDay,
+      cycle_start_day: this.reportingCycleStartDay,
       months: Array.from(monthMap.entries()).map(([monthKey, value]) => ({
         month_key: monthKey,
         label: value.label,
@@ -505,7 +504,7 @@ export class StatsService {
     return {
       month: window.monthKey,
       timezone: this.analyticsTimezone,
-      cycle_close_day: this.reportingCycleCloseDay,
+      cycle_start_day: this.reportingCycleStartDay,
       cycle_start: window.cycleStartDate,
       cycle_end: window.cycleEndDate,
       total: items.length,
@@ -569,7 +568,7 @@ export class StatsService {
     return {
       month: window.monthKey,
       timezone: this.analyticsTimezone,
-      cycle_close_day: this.reportingCycleCloseDay,
+      cycle_start_day: this.reportingCycleStartDay,
       cycle_start: window.cycleStartDate,
       cycle_end: window.cycleEndDate,
       total: items.length,

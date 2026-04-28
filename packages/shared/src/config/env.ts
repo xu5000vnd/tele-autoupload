@@ -14,6 +14,8 @@ function parseUsernameWhitelist(raw: string): string[] {
 const baseSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   LOG_LEVEL: z.string().default('info'),
+  LOG_DIR: z.string().default('logs'),
+  LOG_RETENTION_DAYS: z.coerce.number().int().positive().default(14),
   TG_API_ID: z.coerce.number().int().positive(),
   TG_API_HASH: z.string().min(1),
   TG_SESSION_STRING: z.string().min(1),
@@ -62,6 +64,8 @@ export type AppConfig = ReturnType<typeof parseEnv>;
 export function parseEnv(): {
   nodeEnv: 'development' | 'test' | 'production';
   logLevel: string;
+  logDir: string;
+  logRetentionDays: number;
   telegram: {
     apiId: number;
     apiHash: string;
@@ -118,6 +122,8 @@ export function parseEnv(): {
   return {
     nodeEnv: env.NODE_ENV,
     logLevel: env.LOG_LEVEL,
+    logDir: env.LOG_DIR,
+    logRetentionDays: env.LOG_RETENTION_DAYS,
     telegram: {
       apiId: env.TG_API_ID,
       apiHash: env.TG_API_HASH,

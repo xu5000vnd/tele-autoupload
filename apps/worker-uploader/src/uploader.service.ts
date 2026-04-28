@@ -62,7 +62,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
 
     await this.prisma.mediaItem.update({
       where: { id: item.id },
-      data: { status: MediaStatus.uploading },
+      data: { status: MediaStatus.uploading, updatedAt: new Date() },
     });
 
     await this.eventLogService.log(item.id, 'upload_start', { attempt: job.attemptsMade + 1 });
@@ -98,6 +98,25 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
       userPath: resolvedUserPath,
     });
 
+    logger.info(
+      {
+        mediaItemId: item.id,
+        chatId: item.chatId.toString(),
+        messageId: item.messageId.toString(),
+        senderId: item.senderId?.toString(),
+        mediaStatus: MediaStatus.uploading,
+        userTuId: userTu?.id,
+        tuId: userTu?.tuId,
+        tuName: userTu?.tuName,
+        uploadStrategy: appConfig.uploadStrategy,
+        localPath: item.localPath ?? job.data.localPath,
+        resolvedUserPath,
+        destinationFolderId: destination.folderId,
+        destinationFolderPath: destination.folderPath,
+      },
+      'upload starting for media item',
+    );
+
     await this.folderResolverService.rememberDateFolder(item.chatId, item.date, destination.folderId);
 
     const fileName = path.basename(item.localPath ?? job.data.localPath);
@@ -112,6 +131,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
         status: MediaStatus.uploaded,
         driveFileId: result.remoteRef,
         driveWebUrl: result.webUrl,
+        updatedAt: new Date(),
       },
     });
 
@@ -119,6 +139,27 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
       remoteRef: result.remoteRef,
       bytesUploaded: result.bytesUploaded.toString(),
     });
+
+    logger.info(
+      {
+        mediaItemId: item.id,
+        chatId: item.chatId.toString(),
+        messageId: item.messageId.toString(),
+        senderId: item.senderId?.toString(),
+        mediaStatus: MediaStatus.uploaded,
+        userTuId: userTu?.id,
+        tuId: userTu?.tuId,
+        tuName: userTu?.tuName,
+        uploadStrategy: appConfig.uploadStrategy,
+        destinationFolderId: destination.folderId,
+        destinationFolderPath: destination.folderPath,
+        strategyStatus: result.status,
+        remoteRef: result.remoteRef,
+        driveWebUrl: result.webUrl,
+        bytesUploaded: result.bytesUploaded.toString(),
+      },
+      'upload completed for media item',
+    );
 
     this.recordUploadSuccess({
       tuName: userTu?.tuName ?? 'unknown',
@@ -164,6 +205,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
         failedAt: new Date(),
         retryCount: { increment: 1 },
         lastRetryAt: new Date(),
+        updatedAt: new Date(),
       },
     });
 
@@ -175,9 +217,25 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
             telegramUserId: failedItem.senderId,
             telegramChatId: failedItem.chatId,
           },
-          select: { tuName: true },
+          select: { id: true, tuId: true, tuName: true },
         })
       : null;
+
+    logger.error(
+      {
+        mediaItemId,
+        chatId: failedItem.chatId.toString(),
+        messageId: failedItem.messageId.toString(),
+        senderId: failedItem.senderId?.toString(),
+        mediaStatus: MediaStatus.failed,
+        userTuId: failedUser?.id,
+        tuId: failedUser?.tuId,
+        tuName: failedUser?.tuName,
+        localPath: failedItem.localPath,
+        error: error.message,
+      },
+      'upload failed for media item',
+    );
 
     this.recordUploadFailure({
       tuName: failedUser?.tuName ?? 'unknown',

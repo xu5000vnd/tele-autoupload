@@ -61,20 +61,14 @@ export class TelegramGateway {
     this.updatesRegistered = true;
 
     this.client.addEventHandler(async (event: { message: Api.Message }) => {
-      logger.info({
-        hasMessage: !!event.message,
-        messageId: event.message?.id,
-        hasMedia: !!event.message?.media,
-        mediaType: event.message?.media?.className,
-        peerId: event.message?.peerId?.className,
-      }, 'raw new message event received');
+      logger.info(this.buildRawMessageLogContext(event.message), 'raw new message event received');
 
       if (!event.message) return;
 
       try {
         const msg = await this.parseMessage(event.message);
         if (!msg) {
-          logger.info({ messageId: event.message.id }, 'message dropped by parseMessage (no media or unsupported type)');
+          logger.info(this.buildRawMessageLogContext(event.message), 'message dropped by parseMessage (no media or unsupported type)');
           return;
         }
         for (const handler of this.newMessageHandlers) {
@@ -93,6 +87,8 @@ export class TelegramGateway {
 
       const apiMsg = update.message;
       if (!(apiMsg instanceof Api.Message)) return;
+
+      logger.info(this.buildRawMessageLogContext(apiMsg), 'raw edited message event received');
 
       try {
         const msg = await this.parseMessage(apiMsg);
@@ -356,6 +352,32 @@ export class TelegramGateway {
     }
 
     return [];
+  }
+
+  private buildRawMessageLogContext(message?: Api.Message): Record<string, unknown> {
+    const chatId = message?.peerId ? this.tryPeerToChatId(message.peerId) : undefined;
+    const senderId = message?.fromId ? this.tryPeerToChatId(message.fromId) : undefined;
+    const groupedId = message?.groupedId ? biToNative(message.groupedId) : undefined;
+
+    return {
+      hasMessage: !!message,
+      messageId: message?.id,
+      groupedId: groupedId?.toString(),
+      hasMedia: !!message?.media,
+      mediaType: message?.media?.className,
+      peerId: message?.peerId?.className,
+      chatId: chatId?.toString(),
+      senderPeerType: message?.fromId?.className,
+      senderId: senderId?.toString(),
+    };
+  }
+
+  private tryPeerToChatId(peer: Api.TypePeer): bigint | undefined {
+    try {
+      return this.peerToChatId(peer);
+    } catch {
+      return undefined;
+    }
   }
 
   private peerToChatId(peer: Api.TypePeer): bigint {

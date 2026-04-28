@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { appConfig } from '@shared/config/env';
 import { MediaService } from '@shared/services/media.service';
@@ -12,7 +12,6 @@ import { ChatType, Prisma, UserTuStatus } from '@prisma/client';
 @Injectable()
 export class IngestorService implements OnModuleInit, OnModuleDestroy {
   private reconnecting = false;
-  private logger = new Logger(IngestorService.name);
   private readonly unknownUserNotifyCooldownMs = 10 * 60 * 1000;
   private readonly unknownUserLastNotifiedAt = new Map<string, number>();
 
@@ -35,7 +34,17 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleIncoming(message: IncomingMessage): Promise<void> {
-    this.logger.log('handleIncoming', message);
+    logger.debug(
+      {
+        chatId: message.chatId.toString(),
+        messageId: message.messageId.toString(),
+        groupedId: message.groupedId?.toString(),
+        senderId: message.senderId?.toString(),
+        senderUsername: message.senderUsername,
+        mediaCount: message.media.length,
+      },
+      'handleIncoming invoked',
+    );
     if (!message.senderId && !message.senderUsername) {
       return;
     }
@@ -66,7 +75,17 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
 
     if (!allowedUser) {
       logger.info(
-        { senderId: message.senderId?.toString(), senderUsername: message.senderUsername, chatId: message.chatId.toString() },
+        {
+          senderId: message.senderId?.toString(),
+          senderUsername: message.senderUsername,
+          chatId: message.chatId.toString(),
+          chatIdAliases: chatIdsForLookup.map((id) => id.toString()),
+          chatType: message.chatType,
+          chatTitle: message.chatTitle,
+          messageId: message.messageId.toString(),
+          groupedId: message.groupedId?.toString(),
+          mediaCount: message.media.length,
+        },
         'message from unregistered or inactive user — skipped',
       );
       await this.notifyUnknownUploader(message);
@@ -97,6 +116,8 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
       logger.info(
         {
           userTuId: allowedUser.id,
+          tuId: allowedUser.tuId,
+          tuName: allowedUser.tuName,
           oldTelegramUserId: allowedUser.telegramUserId.toString(),
           newTelegramUserId: message.senderId?.toString(),
           oldTelegramChatId: allowedUser.telegramChatId.toString(),
@@ -108,8 +129,30 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    logger.info(
+      {
+        userTuId: allowedUser.id,
+        tuId: allowedUser.tuId,
+        tuName: allowedUser.tuName,
+        chatId: message.chatId.toString(),
+        chatIdAliases: chatIdsForLookup.map((id) => id.toString()),
+        chatType: message.chatType,
+        chatTitle: message.chatTitle,
+        senderId: message.senderId?.toString(),
+        senderUsername: message.senderUsername,
+        messageId: message.messageId.toString(),
+        groupedId: message.groupedId?.toString(),
+        mediaCount: message.media.length,
+      },
+      'matched incoming media message to active uploader',
+    );
+
     try {
-      await this.mediaService.processIncomingMessage(message);
+      await this.mediaService.processIncomingMessage(message, {
+        userTuId: allowedUser.id,
+        tuId: allowedUser.tuId,
+        tuName: allowedUser.tuName,
+      });
     } catch (error) {
       logger.error({ err: error, chatId: message.chatId.toString(), messageId: message.messageId.toString() }, 'failed to process incoming message');
     }
@@ -119,6 +162,17 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
   async reconcile(): Promise<void> {
     const intervalMs = appConfig.reconciliationIntervalMin * 60_000;
     const now = Date.now();
+    const recoveredCount = await this.mediaService.recoverStaleMediaItems(intervalMs);
+
+    if (recoveredCount > 0) {
+      logger.warn(
+        {
+          recoveredCount,
+          staleThresholdMs: intervalMs,
+        },
+        'stale media recovery sweep completed before reconciliation',
+      );
+    }
 
     const [activeGroups, configuredChats] = await Promise.all([
       this.prisma.groupState.findMany({ where: { isActive: true } }),
@@ -242,7 +296,13 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
   private async notifyUnknownUploader(message: IncomingMessage): Promise<void> {
     if (this.isWhitelistedUnknownUploader(message.senderUsername)) {
       logger.info(
-        { senderUsername: message.senderUsername, chatId: message.chatId.toString() },
+        {
+          senderUsername: message.senderUsername,
+          senderId: message.senderId?.toString(),
+          chatId: message.chatId.toString(),
+          messageId: message.messageId.toString(),
+          groupedId: message.groupedId?.toString(),
+        },
         'unknown uploader matched whitelist username; notification skipped',
       );
       return;

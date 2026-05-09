@@ -5,6 +5,7 @@ import DashboardPage from './pages/DashboardPage.vue';
 import DashboardMonthDetailPage from './pages/DashboardMonthDetailPage.vue';
 import MessagesPage from './pages/MessagesPage.vue';
 import HistoriesPage from './pages/HistoriesPage.vue';
+import UsersPage from './pages/UsersPage.vue';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -12,6 +13,7 @@ const router = createRouter({
     { path: '/', redirect: '/dashboard' },
     { path: '/dashboard', component: DashboardPage },
     { path: '/dashboard/month/:monthKey', component: DashboardMonthDetailPage },
+    { path: '/users', component: UsersPage },
     { path: '/messages', component: MessagesPage },
     { path: '/histories', component: HistoriesPage },
   ],

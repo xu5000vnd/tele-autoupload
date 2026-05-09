@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, OnModuleDestroy, OnModuleInit, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { UserTuStatus } from '@prisma/client';
 import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
@@ -19,6 +19,16 @@ interface CreateCampaignInput {
   body: string;
   media: MediaInput[];
   createdBy?: string;
+}
+
+interface SaveTargetInput {
+  tuId?: string;
+  tuName?: string;
+  path?: string | null;
+  telegramUserId?: bigint;
+  telegramChatId?: bigint;
+  username?: string | null;
+  status?: UserTuStatus;
 }
 
 @Injectable()
@@ -79,6 +89,32 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private targetPayload(user: {
+    id: number;
+    tuId: string;
+    tuName: string;
+    path: string | null;
+    telegramChatId: bigint;
+    telegramUserId: bigint;
+    username: string | null;
+    status: UserTuStatus;
+  }): Record<string, unknown> {
+    return {
+      id: user.id,
+      tu_id: user.tuId,
+      tu_name: user.tuName,
+      path: user.path,
+      telegram_chat_id: user.telegramChatId.toString(),
+      telegram_user_id: user.telegramUserId.toString(),
+      telegram_username: user.username,
+      status: user.status,
+    };
+  }
+
+  private isUniqueConstraintError(err: unknown): boolean {
+    return Boolean(err && typeof err === 'object' && 'code' in err && err.code === 'P2002');
+  }
+
   async onModuleInit(): Promise<void> {
     try {
       await this.telegramGateway.connect({ withUpdates: false });
@@ -92,17 +128,18 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     await this.telegramGateway.disconnect();
   }
 
-  async listTargets(query?: string): Promise<Record<string, unknown>[]> {
+  async listTargets(query?: string, status: UserTuStatus | 'all' = UserTuStatus.active): Promise<Record<string, unknown>[]> {
     const q = query?.trim();
     const users = await this.prisma.userTu.findMany({
       where: {
-        status: UserTuStatus.active,
+        ...(status === 'all' ? {} : { status }),
         ...(q
           ? {
               OR: [
                 { tuName: { contains: q, mode: 'insensitive' } },
                 { username: { contains: q.toLowerCase(), mode: 'insensitive' } },
                 { tuId: { contains: q, mode: 'insensitive' } },
+                { path: { contains: q, mode: 'insensitive' } },
               ],
             }
           : {}),
@@ -111,22 +148,77 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         id: true,
         tuId: true,
         tuName: true,
+        path: true,
         telegramChatId: true,
         telegramUserId: true,
         username: true,
+        status: true,
       },
       orderBy: { tuName: 'asc' },
       take: 500,
     });
 
-    return users.map((u) => ({
-      id: u.id,
-      tu_id: u.tuId,
-      tu_name: u.tuName,
-      telegram_chat_id: u.telegramChatId.toString(),
-      telegram_user_id: u.telegramUserId.toString(),
-      telegram_username: u.username ?? null,
-    }));
+    return users.map((u) => this.targetPayload(u));
+  }
+
+  async createTarget(input: SaveTargetInput): Promise<Record<string, unknown>> {
+    if (!input.tuId || !input.tuName || input.telegramUserId === undefined || input.telegramChatId === undefined) {
+      throw new BadRequestException('tu_id, tu_name, telegram_user_id, and telegram_chat_id are required');
+    }
+
+    try {
+      const user = await this.prisma.userTu.create({
+        data: {
+          tuId: input.tuId,
+          tuName: input.tuName,
+          path: input.path ?? null,
+          telegramUserId: input.telegramUserId,
+          telegramChatId: input.telegramChatId,
+          username: input.username ?? null,
+          status: input.status ?? UserTuStatus.active,
+          updatedAt: new Date(),
+        },
+      });
+
+      return this.targetPayload(user);
+    } catch (err) {
+      if (this.isUniqueConstraintError(err)) {
+        throw new ConflictException('tu_id or telegram user/chat pair already exists');
+      }
+      throw err;
+    }
+  }
+
+  async updateTarget(id: number, input: SaveTargetInput): Promise<Record<string, unknown>> {
+    if (!Object.keys(input).length) {
+      throw new BadRequestException('at least one field is required');
+    }
+
+    try {
+      const user = await this.prisma.userTu.update({
+        where: { id },
+        data: {
+          ...(input.tuId !== undefined ? { tuId: input.tuId } : {}),
+          ...(input.tuName !== undefined ? { tuName: input.tuName } : {}),
+          ...(input.path !== undefined ? { path: input.path } : {}),
+          ...(input.telegramUserId !== undefined ? { telegramUserId: input.telegramUserId } : {}),
+          ...(input.telegramChatId !== undefined ? { telegramChatId: input.telegramChatId } : {}),
+          ...(input.username !== undefined ? { username: input.username } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          updatedAt: new Date(),
+        },
+      });
+
+      return this.targetPayload(user);
+    } catch (err) {
+      if (this.isUniqueConstraintError(err)) {
+        throw new ConflictException('tu_id or telegram user/chat pair already exists');
+      }
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'P2025') {
+        throw new NotFoundException('target not found');
+      }
+      throw err;
+    }
   }
 
   async createCampaign(input: CreateCampaignInput): Promise<Record<string, unknown>> {

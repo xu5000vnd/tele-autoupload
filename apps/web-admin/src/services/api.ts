@@ -104,6 +104,19 @@ export async function apiPost<T>(url: string, payload: unknown): Promise<T> {
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
 
+export async function apiPut<T>(url: string, payload: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return text ? (JSON.parse(text) as T) : ({} as T);
+}
+
 export type LoginRequest = {
   username: string;
   password: string;
@@ -135,7 +148,40 @@ export type Target = {
   telegram_chat_id: string;
   telegram_user_id: string;
   telegram_username: string | null;
+  path?: string | null;
+  status?: 'active' | 'inactive';
 };
+
+export type SaveTargetRequest = {
+  tu_id?: string;
+  tu_name?: string;
+  telegram_chat_id?: string;
+  telegram_user_id?: string;
+  telegram_username?: string | null;
+  path?: string | null;
+  status?: 'active' | 'inactive';
+};
+
+export function listTargets(query = '', status: 'active' | 'inactive' | 'all' = 'active'): Promise<Target[]> {
+  const params = new URLSearchParams();
+  if (query.trim()) {
+    params.set('query', query.trim());
+  }
+  if (status !== 'active') {
+    params.set('status', status);
+  }
+
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return apiGet<Target[]>(`/api/messages/targets${suffix}`);
+}
+
+export function addTarget(payload: SaveTargetRequest): Promise<Target> {
+  return apiPost<Target>('/api/messages/targets', payload);
+}
+
+export function updateTarget(id: number, payload: SaveTargetRequest): Promise<Target> {
+  return apiPut<Target>(`/api/messages/targets/${id}`, payload);
+}
 
 export type HistoryItem = {
   campaign_id: string;

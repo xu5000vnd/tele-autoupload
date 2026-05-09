@@ -4,6 +4,7 @@
       <div class="brand">Tele Auto Upload Admin</div>
       <nav>
         <RouterLink to="/dashboard">Dashboard</RouterLink>
+        <RouterLink to="/users">Users</RouterLink>
         <RouterLink to="/messages">Messages</RouterLink>
         <RouterLink to="/histories">Histories</RouterLink>
       </nav>

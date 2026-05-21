@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { MediaStatus } from '@prisma/client';
 import { BearerAuthGuard } from './auth.guard';
 import { StatsService } from './stats.service';
@@ -53,6 +53,19 @@ export class StatsController {
       Number(limit),
       Number(offset),
     );
+  }
+
+  @Get('dashboard/users/:userId/upload-history')
+  userUploadHistory(
+    @Param('userId') userId: string,
+    @Query('limit') limit = '90',
+  ): Promise<Record<string, unknown>> {
+    const parsedUserId = Number(userId);
+    if (!Number.isInteger(parsedUserId) || parsedUserId <= 0) {
+      throw new BadRequestException('userId must be a positive integer');
+    }
+
+    return this.statsService.userUploadHistory(parsedUserId, Number(limit));
   }
 
   @Get('stats/today')

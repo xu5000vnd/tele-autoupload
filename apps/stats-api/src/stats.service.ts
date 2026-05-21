@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { MediaStatus, UserTuStatus } from '@prisma/client';
 import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
@@ -34,6 +34,17 @@ type MonthWindow = {
   endUtc: Date;
   cycleStartDate: string;
   cycleEndDate: string;
+};
+
+type UserUploadHistoryRow = {
+  upload_date: string;
+  total_media: number | bigint;
+  image_count: number | bigint;
+  video_count: number | bigint;
+  document_count: number | bigint;
+  uploaded_count: number | bigint;
+  failed_count: number | bigint;
+  pending_count: number | bigint;
 };
 
 @Injectable()
@@ -575,6 +586,79 @@ export class StatsService {
       limit,
       offset,
       items: items.slice(offset, offset + limit),
+    };
+  }
+
+  async userUploadHistory(userId: number, limitRaw?: number): Promise<Record<string, unknown>> {
+    const limit = this.normalizeLimit(limitRaw);
+    const user = await this.prisma.userTu.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        tuId: true,
+        tuName: true,
+        path: true,
+        telegramUserId: true,
+        telegramChatId: true,
+        username: true,
+        status: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('user not found');
+    }
+
+    const rows = await this.prisma.$queryRaw<UserUploadHistoryRow[]>`
+      SELECT
+        to_char(("date" + interval '7 hours'), 'YYYY-MM-DD') AS upload_date,
+        COUNT(*)::int AS total_media,
+        SUM(CASE WHEN media_type = 'photo' THEN 1 ELSE 0 END)::int AS image_count,
+        SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END)::int AS video_count,
+        SUM(CASE WHEN media_type = 'document' THEN 1 ELSE 0 END)::int AS document_count,
+        SUM(CASE WHEN status = 'uploaded' THEN 1 ELSE 0 END)::int AS uploaded_count,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)::int AS failed_count,
+        SUM(CASE WHEN status IN ('queued', 'downloading', 'downloaded', 'uploading') THEN 1 ELSE 0 END)::int AS pending_count
+      FROM media_item
+      WHERE sender_id = ${user.telegramUserId}
+        AND chat_id = ${user.telegramChatId}
+      GROUP BY upload_date
+      ORDER BY upload_date DESC
+      LIMIT ${limit}
+    `;
+
+    const items = rows.map((row) => ({
+      date: row.upload_date,
+      total_media: Number(row.total_media),
+      image_count: Number(row.image_count),
+      video_count: Number(row.video_count),
+      document_count: Number(row.document_count),
+      uploaded_count: Number(row.uploaded_count),
+      failed_count: Number(row.failed_count),
+      pending_count: Number(row.pending_count),
+    }));
+
+    return {
+      user: {
+        id: user.id,
+        tu_id: user.tuId,
+        tu_name: user.tuName,
+        path: user.path,
+        telegram_chat_id: user.telegramChatId.toString(),
+        telegram_user_id: user.telegramUserId.toString(),
+        telegram_username: user.username,
+        status: user.status,
+      },
+      timezone: this.analyticsTimezone,
+      limit,
+      total_dates: items.length,
+      summary: {
+        total_media: items.reduce((sum, item) => sum + item.total_media, 0),
+        uploaded_count: items.reduce((sum, item) => sum + item.uploaded_count, 0),
+        failed_count: items.reduce((sum, item) => sum + item.failed_count, 0),
+        pending_count: items.reduce((sum, item) => sum + item.pending_count, 0),
+      },
+      items,
     };
   }
 

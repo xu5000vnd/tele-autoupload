@@ -183,6 +183,101 @@ export function updateTarget(id: number, payload: SaveTargetRequest): Promise<Ta
   return apiPut<Target>(`/api/messages/targets/${id}`, payload);
 }
 
+export type TargetUploadHistoryDay = {
+  date: string;
+  total_media: number;
+  image_count: number;
+  video_count: number;
+  document_count: number;
+  uploaded_count: number;
+  failed_count: number;
+  pending_count: number;
+};
+
+export type TargetUploadHistoryResponse = {
+  user: Target;
+  timezone: string;
+  limit: number;
+  total_dates: number;
+  summary: {
+    total_media: number;
+    uploaded_count: number;
+    failed_count: number;
+    pending_count: number;
+  };
+  items: TargetUploadHistoryDay[];
+};
+
+export function getTargetUploadHistory(id: number, limit = 90): Promise<TargetUploadHistoryResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return apiGet<TargetUploadHistoryResponse>(
+    `/api/dashboard/users/${encodeURIComponent(id)}/upload-history?${params.toString()}`,
+  );
+}
+
+export type ReminderScheduleTargetRule =
+  | 'no_media_current_period'
+  | 'all_active_users';
+
+export type ReminderScheduleRun = {
+  id: number;
+  schedule_id: number;
+  run_key: string;
+  run_date: string;
+  trigger_type: string;
+  status: string;
+  campaign_id: string | null;
+  target_count: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string | null;
+};
+
+export type ReminderSchedule = {
+  id: number;
+  name: string;
+  status: 'active' | 'inactive';
+  days_of_month: number[];
+  send_time: string;
+  timezone: string;
+  target_rule: ReminderScheduleTargetRule;
+  message_template: string;
+  last_run_at: string | null;
+  next_run_label: string | null;
+  created_at: string;
+  updated_at: string | null;
+  recent_runs: ReminderScheduleRun[];
+};
+
+export type SaveReminderScheduleRequest = {
+  name: string;
+  status: 'active' | 'inactive';
+  days_of_month: number[];
+  send_time: string;
+  timezone: string;
+  target_rule: ReminderScheduleTargetRule;
+  message_template: string;
+};
+
+export function listReminderSchedules(): Promise<ReminderSchedule[]> {
+  return apiGet<ReminderSchedule[]>('/api/reminder-schedules');
+}
+
+export function createReminderSchedule(payload: SaveReminderScheduleRequest): Promise<ReminderSchedule> {
+  return apiPost<ReminderSchedule>('/api/reminder-schedules', payload);
+}
+
+export function updateReminderSchedule(
+  id: number,
+  payload: SaveReminderScheduleRequest,
+): Promise<ReminderSchedule> {
+  return apiPut<ReminderSchedule>(`/api/reminder-schedules/${id}`, payload);
+}
+
+export function runReminderScheduleNow(id: number): Promise<ReminderScheduleRun> {
+  return apiPost<ReminderScheduleRun>(`/api/reminder-schedules/${id}/run-now`, {});
+}
+
 export type HistoryItem = {
   campaign_id: string;
   body_template: string;

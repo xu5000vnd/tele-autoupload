@@ -12,8 +12,25 @@
         <button class="btn-secondary" @click="clearSelection" type="button">
           Clear
         </button>
+        <button
+          :class="['btn-secondary', { active: showSelectedOnly }]"
+          @click="toggleSelectedFilter"
+          type="button"
+        >
+          {{ showSelectedOnly ? "Show All" : "Selected Only" }}
+        </button>
         <span class="muted">Total selected: {{ selectedIds.length }}</span>
       </div>
+
+      <div class="paste-select">
+        <textarea
+          v-model="pastedUserIds"
+          placeholder="Paste names / TU IDs / Telegram user IDs / usernames"
+          @input="selectPastedUserIds"
+        ></textarea>
+        <div class="muted" v-if="pasteSelectionMsg">{{ pasteSelectionMsg }}</div>
+      </div>
+
       <div class="row" style="margin-bottom: 8px">
         <input
           v-model="search"
@@ -77,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   apiGet,
   apiPost,
@@ -100,18 +117,25 @@ type SelectedMedia = {
   previewUrl: string | null;
 };
 
+type PastedUserEntry = {
+  fullToken: string;
+};
+
 const targets = ref<Target[]>([]);
 const filteredTargets = ref<Target[]>([]);
 const selectedIds = ref<number[]>([]);
 const loadingTargets = ref(false);
 const submitting = ref(false);
 const search = ref("");
+const showSelectedOnly = ref(false);
+const pastedUserIds = ref("");
 const body = ref("");
 const mediaItems = ref<SelectedMedia[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const successMsg = ref("");
 const errorMsg = ref("");
 const prefillMsg = ref("");
+const pasteSelectionMsg = ref("");
 
 const previewBody = computed(() => {
   const first = targets.value.find((t) => selectedIds.value.includes(t.id));
@@ -119,6 +143,12 @@ const previewBody = computed(() => {
     return "Select one target to preview template output.";
   }
   return renderTemplate(body.value, first);
+});
+
+watch(selectedIds, () => {
+  if (showSelectedOnly.value) {
+    applyFilter();
+  }
 });
 
 function renderTemplate(template: string, target: Target): string {
@@ -136,18 +166,17 @@ function renderTemplate(template: string, target: Target): string {
 
 function applyFilter(): void {
   const q = search.value.trim().toLowerCase();
-  if (!q) {
-    filteredTargets.value = [...targets.value];
-    return;
-  }
+  const selectedSet = new Set(selectedIds.value);
 
   filteredTargets.value = targets.value.filter((t) => {
-    return (
+    const matchesSearch = !q || (
       t.tu_name.toLowerCase().includes(q) ||
       t.tu_id.toLowerCase().includes(q) ||
       (t.telegram_username ?? "").toLowerCase().includes(q) ||
       t.telegram_chat_id.includes(q)
     );
+
+    return matchesSearch && (!showSelectedOnly.value || selectedSet.has(t.id));
   });
 }
 
@@ -193,10 +222,78 @@ function selectAllVisible(): void {
   const set = new Set(selectedIds.value);
   filteredTargets.value.forEach((t) => set.add(t.id));
   selectedIds.value = [...set];
+  applyFilter();
 }
 
 function clearSelection(): void {
   selectedIds.value = [];
+  pasteSelectionMsg.value = "";
+  applyFilter();
+}
+
+function toggleSelectedFilter(): void {
+  showSelectedOnly.value = !showSelectedOnly.value;
+  applyFilter();
+}
+
+function normalizeUserToken(value: string | number | null | undefined): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/^@/, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function parsePastedUserEntries(value: string): PastedUserEntry[] {
+  return value
+    .split(/\n+/)
+    .map(normalizeUserToken)
+    .filter(Boolean)
+    .map((fullToken) => ({
+      fullToken,
+    }));
+}
+
+function targetMatchTokens(target: Target): string[] {
+  return [
+    target.id,
+    target.tu_name,
+    target.tu_id,
+    target.telegram_user_id,
+    target.telegram_chat_id,
+    target.telegram_username,
+  ].map(normalizeUserToken).filter(Boolean);
+}
+
+function selectPastedUserIds(): void {
+  const entries = parsePastedUserEntries(pastedUserIds.value);
+  if (!entries.length) {
+    pasteSelectionMsg.value = "";
+    return;
+  }
+
+  const targetTokenMap = targets.value.map((target) => ({
+    id: target.id,
+    tokens: new Set(targetMatchTokens(target)),
+  }));
+  const matchedIds = new Set<number>();
+  let matchedCount = 0;
+
+  entries.forEach((entry) => {
+    const fullMatch = targetTokenMap.find((target) => target.tokens.has(entry.fullToken));
+    if (fullMatch) {
+      matchedIds.add(fullMatch.id);
+      matchedCount += 1;
+    }
+  });
+
+  const selected = new Set(selectedIds.value);
+  matchedIds.forEach((id) => selected.add(id));
+  selectedIds.value = [...selected];
+  applyFilter();
+
+  const missingCount = entries.length - matchedCount;
+  pasteSelectionMsg.value = `${matchedCount} matched${missingCount ? ` · ${missingCount} not found` : ""}`;
 }
 
 function onFileChange(event: Event): void {
@@ -261,7 +358,6 @@ async function submit(): Promise<void> {
     if (fileInput.value) {
       fileInput.value.value = "";
     }
-    clearAllMedia();
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -316,6 +412,16 @@ textarea {
   resize: vertical;
 }
 
+.paste-select {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.paste-select textarea {
+  min-height: 76px;
+}
+
 .row {
   display: flex;
   gap: 10px;
@@ -339,6 +445,10 @@ button:disabled {
 
 .btn-secondary {
   background: #1e293b;
+}
+
+.btn-secondary.active {
+  background: #2563eb;
 }
 
 .target-list {

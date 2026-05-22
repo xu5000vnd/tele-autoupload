@@ -28,7 +28,20 @@
           placeholder="Paste names / TU IDs / Telegram user IDs / usernames"
           @input="selectPastedUserIds"
         ></textarea>
-        <div class="muted" v-if="pasteSelectionMsg">{{ pasteSelectionMsg }}</div>
+        <div v-if="pasteSelectionMsg" class="paste-summary">
+          <span class="muted">{{ pasteSelectionMsg }}</span>
+          <button
+            v-if="notFoundEntries.length"
+            class="btn-secondary compact-btn"
+            type="button"
+            @click="showNotFound = !showNotFound"
+          >
+            {{ showNotFound ? "Hide Not Found" : `Show Not Found (${notFoundEntries.length})` }}
+          </button>
+        </div>
+        <div v-if="showNotFound && notFoundEntries.length" class="not-found-list">
+          <div v-for="entry in notFoundEntries" :key="entry">{{ entry }}</div>
+        </div>
       </div>
 
       <div class="row" style="margin-bottom: 8px">
@@ -118,6 +131,7 @@ type SelectedMedia = {
 };
 
 type PastedUserEntry = {
+  rawText: string;
   fullToken: string;
 };
 
@@ -136,6 +150,8 @@ const successMsg = ref("");
 const errorMsg = ref("");
 const prefillMsg = ref("");
 const pasteSelectionMsg = ref("");
+const notFoundEntries = ref<string[]>([]);
+const showNotFound = ref(false);
 
 const previewBody = computed(() => {
   const first = targets.value.find((t) => selectedIds.value.includes(t.id));
@@ -228,6 +244,8 @@ function selectAllVisible(): void {
 function clearSelection(): void {
   selectedIds.value = [];
   pasteSelectionMsg.value = "";
+  notFoundEntries.value = [];
+  showNotFound.value = false;
   applyFilter();
 }
 
@@ -247,10 +265,11 @@ function normalizeUserToken(value: string | number | null | undefined): string {
 function parsePastedUserEntries(value: string): PastedUserEntry[] {
   return value
     .split(/\n+/)
-    .map(normalizeUserToken)
+    .map((line) => line.trim())
     .filter(Boolean)
-    .map((fullToken) => ({
-      fullToken,
+    .map((rawText) => ({
+      rawText,
+      fullToken: normalizeUserToken(rawText),
     }));
 }
 
@@ -269,6 +288,8 @@ function selectPastedUserIds(): void {
   const entries = parsePastedUserEntries(pastedUserIds.value);
   if (!entries.length) {
     pasteSelectionMsg.value = "";
+    notFoundEntries.value = [];
+    showNotFound.value = false;
     return;
   }
 
@@ -277,6 +298,7 @@ function selectPastedUserIds(): void {
     tokens: new Set(targetMatchTokens(target)),
   }));
   const matchedIds = new Set<number>();
+  const missingEntries: string[] = [];
   let matchedCount = 0;
 
   entries.forEach((entry) => {
@@ -284,6 +306,8 @@ function selectPastedUserIds(): void {
     if (fullMatch) {
       matchedIds.add(fullMatch.id);
       matchedCount += 1;
+    } else {
+      missingEntries.push(entry.rawText);
     }
   });
 
@@ -293,6 +317,8 @@ function selectPastedUserIds(): void {
   applyFilter();
 
   const missingCount = entries.length - matchedCount;
+  notFoundEntries.value = missingEntries;
+  showNotFound.value = false;
   pasteSelectionMsg.value = `${matchedCount} matched${missingCount ? ` · ${missingCount} not found` : ""}`;
 }
 
@@ -422,6 +448,25 @@ textarea {
   min-height: 76px;
 }
 
+.paste-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.not-found-list {
+  max-height: 140px;
+  overflow: auto;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #0b1220;
+  color: #fca5a5;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .row {
   display: flex;
   gap: 10px;
@@ -449,6 +494,11 @@ button:disabled {
 
 .btn-secondary.active {
   background: #2563eb;
+}
+
+.compact-btn {
+  padding: 5px 8px;
+  font-size: 12px;
 }
 
 .target-list {

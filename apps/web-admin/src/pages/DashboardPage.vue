@@ -106,7 +106,9 @@
                   <input type="checkbox" :value="item.user_tu_id" v-model="missingSelectedIds" />
                 </td>
                 <td>
-                  <strong>{{ item.tu_name }}</strong>
+                  <RouterLink class="user-link" :to="`/users/${item.user_tu_id}`">
+                    <strong>{{ item.tu_name }}</strong>
+                  </RouterLink>
                   <div class="muted">{{ item.tu_id }}</div>
                 </td>
                 <td>{{ item.telegram_username ? `@${item.telegram_username}` : 'no_username' }}</td>
@@ -135,7 +137,10 @@
               <tbody>
                 <tr v-for="u in overview.today_summary.top_uploaders" :key="`${u.chat_id}_${u.sender_id}`">
                   <td>
-                    <b>{{ u.tu_name }}</b>
+                    <RouterLink v-if="u.user_tu_id" class="user-link" :to="`/users/${u.user_tu_id}`">
+                      <b>{{ u.tu_name }}</b>
+                    </RouterLink>
+                    <b v-else>{{ u.tu_name }}</b>
                     <div class="muted">{{ u.telegram_username ? `@${u.telegram_username}` : 'no_username' }}</div>
                   </td>
                   <td>{{ u.chat_id }}</td>
@@ -447,6 +452,16 @@ h3 {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.user-link {
+  color: #bfdbfe;
+  text-decoration: none;
+}
+
+.user-link:hover {
+  color: #dbeafe;
+  text-decoration: underline;
 }
 
 .heat-grid {

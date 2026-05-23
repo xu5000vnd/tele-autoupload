@@ -289,6 +289,41 @@ export type HistoryItem = {
   created_at: string;
 };
 
+export type HistoryDetailResponse = {
+  campaign_id: string;
+  body_template: string;
+  created_by: string;
+  status: string;
+  total_targets: number;
+  success_targets: number;
+  failed_targets: number;
+  created_at: string;
+  updated_at: string | null;
+  medias: Array<{
+    id: number;
+    file_name: string;
+    mime_type: string | null;
+    order_index: number;
+    local_path: string;
+  }>;
+  targets: Array<{
+    id: number;
+    user_tu_id: number | null;
+    tu_name: string;
+    telegram_chat_id: string;
+    rendered_body: string;
+    status: string;
+    attempt_count: number;
+    error: string | null;
+    sent_at: string | null;
+    failed_at: string | null;
+  }>;
+};
+
+export function getHistoryDetail(campaignId: string): Promise<HistoryDetailResponse> {
+  return apiGet<HistoryDetailResponse>(`/api/messages/histories/${encodeURIComponent(campaignId)}`);
+}
+
 export type DashboardOverview = {
   generated_at: string;
   health: {
@@ -312,6 +347,7 @@ export type DashboardOverview = {
     total_failed: number;
     active_users: number;
     top_uploaders: Array<{
+      user_tu_id: number | null;
       tu_name: string;
       telegram_username: string | null;
       sender_id: string | null;

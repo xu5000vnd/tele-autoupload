@@ -4,6 +4,7 @@ import App from './App.vue';
 import DashboardPage from './pages/DashboardPage.vue';
 import DashboardMonthDetailPage from './pages/DashboardMonthDetailPage.vue';
 import MessagesPage from './pages/MessagesPage.vue';
+import HistoryDetailPage from './pages/HistoryDetailPage.vue';
 import HistoriesPage from './pages/HistoriesPage.vue';
 import SchedulesPage from './pages/SchedulesPage.vue';
 import UserDetailPage from './pages/UserDetailPage.vue';
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: '/schedules', component: SchedulesPage },
     { path: '/messages', component: MessagesPage },
     { path: '/histories', component: HistoriesPage },
+    { path: '/histories/:campaignId', component: HistoryDetailPage },
   ],
 });
 

@@ -96,7 +96,9 @@
                   <input type="checkbox" :value="item.user_tu_id" v-model="selectedIds" />
                 </td>
                 <td>
-                  <strong>{{ item.tu_name }}</strong>
+                  <RouterLink class="user-link" :to="`/users/${item.user_tu_id}`">
+                    <strong>{{ item.tu_name }}</strong>
+                  </RouterLink>
                   <div class="muted">{{ item.tu_id }}</div>
                 </td>
                 <td>{{ item.telegram_username ? `@${item.telegram_username}` : 'no_username' }}</td>
@@ -271,6 +273,16 @@ onMounted(() => {
 .back-link {
   color: #93c5fd;
   text-decoration: none;
+}
+
+.user-link {
+  color: #bfdbfe;
+  text-decoration: none;
+}
+
+.user-link:hover {
+  color: #dbeafe;
+  text-decoration: underline;
 }
 
 .header-copy,

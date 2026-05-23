@@ -29,7 +29,11 @@
             <td>✅ {{ item.success_targets }} / ❌ {{ item.failed_targets }} / 📦 {{ item.total_targets }}</td>
             <td>{{ item.media_count }}</td>
             <td>{{ formatDate(item.created_at) }}</td>
-            <td><button @click="loadDetail(item.campaign_id)">Detail</button></td>
+            <td>
+              <RouterLink class="btn-link" :to="`/histories/${encodeURIComponent(item.campaign_id)}`">
+                Detail
+              </RouterLink>
+            </td>
           </tr>
           <tr v-if="!items.length">
             <td colspan="6" class="muted">No history found.</td>
@@ -37,42 +41,12 @@
         </tbody>
       </table>
     </div>
-
-    <div class="detail" v-if="detail">
-      <h3>Campaign Detail</h3>
-      <div class="muted" style="margin-bottom: 10px;">
-        {{ detail.campaign_id }} | {{ detail.status }} | {{ formatDate(detail.created_at) }}
-      </div>
-
-      <h4>Targets</h4>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>tu_name</th>
-              <th>chat_id</th>
-              <th>status</th>
-              <th>attempt</th>
-              <th>error</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="t in detail.targets" :key="t.id">
-              <td>{{ t.tu_name }}</td>
-              <td>{{ t.telegram_chat_id }}</td>
-              <td><span :class="['status', t.status]">{{ t.status }}</span></td>
-              <td>{{ t.attempt_count }}</td>
-              <td class="muted">{{ t.error || '-' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
   </section>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
+import { RouterLink } from 'vue-router';
 import { apiGet, type HistoryItem } from '../services/api';
 
 type HistoryListResponse = {
@@ -82,22 +56,7 @@ type HistoryListResponse = {
   items: HistoryItem[];
 };
 
-type HistoryDetailResponse = {
-  campaign_id: string;
-  status: string;
-  created_at: string;
-  targets: Array<{
-    id: number;
-    tu_name: string;
-    telegram_chat_id: string;
-    status: string;
-    attempt_count: number;
-    error: string | null;
-  }>;
-};
-
 const items = ref<HistoryItem[]>([]);
-const detail = ref<HistoryDetailResponse | null>(null);
 const loading = ref(false);
 const errorMsg = ref('');
 
@@ -116,15 +75,6 @@ async function loadHistories(): Promise<void> {
     errorMsg.value = err instanceof Error ? err.message : String(err);
   } finally {
     loading.value = false;
-  }
-}
-
-async function loadDetail(campaignId: string): Promise<void> {
-  errorMsg.value = '';
-  try {
-    detail.value = await apiGet<HistoryDetailResponse>(`/api/messages/histories/${campaignId}`);
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err);
   }
 }
 
@@ -150,13 +100,18 @@ onMounted(() => {
 
 h2 { margin-top: 0; }
 
+.btn-link,
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: #2563eb;
   color: #fff;
   border: none;
   border-radius: 8px;
   padding: 9px 12px;
   cursor: pointer;
+  text-decoration: none;
 }
 
 button:disabled { opacity: 0.65; cursor: not-allowed; }
@@ -190,10 +145,6 @@ th { color: #93c5fd; }
 .status.partial_failed { color: #facc15; }
 .status.failed { color: #f87171; }
 .status.running, .status.pending, .status.queued, .status.sending { color: #93c5fd; }
-
-.detail {
-  margin-top: 16px;
-}
 
 .muted { color: #94a3b8; }
 .err { color: #f87171; white-space: pre-wrap; }

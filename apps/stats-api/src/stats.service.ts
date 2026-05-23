@@ -725,6 +725,7 @@ export class StatsService {
       this.prisma.userTu.findMany({
         where: { status: 'active' },
         select: {
+          id: true,
           tuName: true,
           username: true,
           telegramUserId: true,
@@ -749,6 +750,7 @@ export class StatsService {
       const key = `${row.senderId?.toString() ?? 'unknown'}_${row.chatId.toString()}`;
       const matched = userKeyMap.get(key);
       return {
+        user_tu_id: matched?.id ?? null,
         tu_name: matched?.tuName ?? 'Unknown',
         telegram_username: matched?.username ?? null,
         sender_id: row.senderId?.toString() ?? null,

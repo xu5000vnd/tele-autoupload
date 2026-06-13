@@ -82,6 +82,10 @@
           <span class="metric-label">Queued media</span>
         </div>
         <div>
+          <span class="metric-value">{{ result.retried_failed }}</span>
+          <span class="metric-label">Retried failed</span>
+        </div>
+        <div>
           <span class="metric-value">{{ result.skipped_existing }}</span>
           <span class="metric-label">Existing media</span>
         </div>
@@ -146,17 +150,19 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue';
+import { reactive, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { backfillMedia, type MediaBackfillResult } from '../services/api';
 
 type Action = 'preview' | 'run';
 
 const today = new Date().toISOString().slice(0, 10);
+const route = useRoute();
 
 const form = reactive({
-  chat_id: '',
-  from_date: today,
-  to_date: today,
+  chat_id: readChatIdQuery(),
+  from_date: readDateQuery('from_date') || today,
+  to_date: readDateQuery('to_date') || today,
 });
 
 const submitting = ref(false);
@@ -183,8 +189,8 @@ async function submitBackfill(dryRun: boolean): Promise<void> {
       dry_run: dryRun,
     });
     successMsg.value = dryRun
-      ? 'Preview completed. No media was queued.'
-      : `Backfill completed. Queued ${result.value.queued_media} media item(s).`;
+      ? 'Preview completed. No media was queued or retried.'
+      : `Backfill completed. Queued ${result.value.queued_media} new and retried ${result.value.retried_failed} failed media item(s).`;
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -200,6 +206,25 @@ function previewBackfill(): Promise<void> {
 function runBackfill(): Promise<void> {
   return submitBackfill(false);
 }
+
+function readChatIdQuery(): string {
+  const value = route.query.chat_id;
+  return typeof value === 'string' ? value : '';
+}
+
+function readDateQuery(key: 'from_date' | 'to_date'): string {
+  const value = route.query[key];
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+}
+
+watch(
+  () => [route.query.chat_id, route.query.from_date, route.query.to_date],
+  () => {
+    form.chat_id = readChatIdQuery();
+    form.from_date = readDateQuery('from_date') || today;
+    form.to_date = readDateQuery('to_date') || form.from_date;
+  },
+);
 </script>
 
 <style scoped>
@@ -355,7 +380,7 @@ button:disabled {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   margin-top: 18px;
 }

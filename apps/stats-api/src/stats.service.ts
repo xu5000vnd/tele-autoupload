@@ -667,7 +667,17 @@ export class StatsService {
     const dayStart = new Date(`${today}T00:00:00.000Z`);
     const dayEnd = new Date(`${today}T23:59:59.999Z`);
 
-    const [uploadCounts, staging, mediaCountsByStatus, topUploadersRows, activeUploaderRows, recentActivityRows, recentFailureRows, activeUsers] = await Promise.all([
+    const [
+      uploadCounts,
+      staging,
+      mediaCountsByStatus,
+      topUploadersRows,
+      activeUploaderRows,
+      recentActivityRows,
+      recentFailureRows,
+      recentFailedMediaRows,
+      activeUsers,
+    ] = await Promise.all([
       this.queueService.uploadQueue.getJobCounts(),
       stagingUsage({ stagingDir: appConfig.stagingDir, maxGb: appConfig.maxStagingSizeGb }),
       this.prisma.mediaItem.groupBy({
@@ -722,10 +732,35 @@ export class StatsService {
         },
         take: 10,
       }),
+      this.prisma.mediaItem.findMany({
+        where: {
+          status: MediaStatus.failed,
+          senderId: { not: null },
+        },
+        take: 100,
+        orderBy: [
+          { failedAt: 'desc' },
+          { updatedAt: 'desc' },
+          { createdAt: 'desc' },
+        ],
+        select: {
+          id: true,
+          date: true,
+          senderId: true,
+          chatId: true,
+          mediaType: true,
+          fileName: true,
+          error: true,
+          failedAt: true,
+          updatedAt: true,
+          createdAt: true,
+        },
+      }),
       this.prisma.userTu.findMany({
         where: { status: 'active' },
         select: {
           id: true,
+          tuId: true,
           tuName: true,
           username: true,
           telegramUserId: true,
@@ -758,6 +793,59 @@ export class StatsService {
         total: row._count.id,
       };
     });
+
+    const failedUploadMap = new Map<string, {
+      user_tu_id: number | null;
+      tu_id: string | null;
+      tu_name: string;
+      telegram_username: string | null;
+      sender_id: string | null;
+      chat_id: string;
+      date: string;
+      failed_count: number;
+      last_failed_at: string | null;
+      sample_error: string | null;
+      sample_file_name: string | null;
+    }>();
+
+    for (const row of recentFailedMediaRows) {
+      const key = `${row.senderId?.toString() ?? 'unknown'}_${row.chatId.toString()}`;
+      const matched = userKeyMap.get(key);
+      const failedDate = this.formatAnalyticsDate(row.date);
+      const aggregateKey = `${key}_${failedDate}`;
+      const failedAt = row.failedAt ?? row.updatedAt ?? row.createdAt;
+      const existing = failedUploadMap.get(aggregateKey);
+
+      if (!existing) {
+        failedUploadMap.set(aggregateKey, {
+          user_tu_id: matched?.id ?? null,
+          tu_id: matched?.tuId ?? null,
+          tu_name: matched?.tuName ?? 'Unknown',
+          telegram_username: matched?.username ?? null,
+          sender_id: row.senderId?.toString() ?? null,
+          chat_id: row.chatId.toString(),
+          date: failedDate,
+          failed_count: 1,
+          last_failed_at: failedAt?.toISOString() ?? null,
+          sample_error: row.error,
+          sample_file_name: row.fileName,
+        });
+        continue;
+      }
+
+      existing.failed_count += 1;
+      const existingLast = existing.last_failed_at ? new Date(existing.last_failed_at).getTime() : 0;
+      const nextLast = failedAt?.getTime() ?? 0;
+      if (nextLast > existingLast) {
+        existing.last_failed_at = failedAt?.toISOString() ?? null;
+        existing.sample_error = row.error;
+        existing.sample_file_name = row.fileName;
+      }
+    }
+
+    const failedUploads = [...failedUploadMap.values()]
+      .sort((a, b) => String(b.last_failed_at ?? '').localeCompare(String(a.last_failed_at ?? '')))
+      .slice(0, 10);
 
     let campaigns: Array<Record<string, unknown>> = [];
     if (this.hasCampaignStorage()) {
@@ -830,6 +918,7 @@ export class StatsService {
         count: row._count.id,
         last_at: row._max.createdAt?.toISOString() ?? null,
       })),
+      failed_uploads: failedUploads,
       campaigns,
     };
   }

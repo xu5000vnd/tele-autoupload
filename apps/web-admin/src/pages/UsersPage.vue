@@ -62,7 +62,9 @@
                 :class="{ selected: user.id === editingId }"
               >
                 <td data-label="User">
-                  <strong>{{ user.tu_name }}</strong>
+                  <RouterLink class="user-name-link" :to="`/users/${user.id}`">
+                    <strong>{{ user.tu_name }}</strong>
+                  </RouterLink>
                   <div class="muted">{{ user.tu_id }}</div>
                   <div class="muted path-text">{{ user.path || 'no path' }}</div>
                 </td>
@@ -78,7 +80,6 @@
                 </td>
                 <td class="action-cell" data-label="Actions">
                   <div class="row-actions">
-                    <RouterLink class="btn-link" :to="`/users/${user.id}`">Detail</RouterLink>
                     <button class="btn-secondary" type="button" @click="editUser(user)">Edit</button>
                   </div>
                 </td>
@@ -420,15 +421,14 @@ tr.selected {
   gap: 8px;
 }
 
-.btn-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
+.user-name-link {
+  color: #e5e7eb;
   text-decoration: none;
-  background: #1e293b;
-  border-radius: 8px;
-  padding: 9px 12px;
+}
+
+.user-name-link:hover {
+  color: #93c5fd;
+  text-decoration: underline;
 }
 
 .modal-backdrop {

@@ -3,41 +3,62 @@
     <div class="card top-row">
       <div>
         <h2>Dashboard</h2>
-        <div class="muted" v-if="overview">Updated: {{ formatDate(overview.generated_at) }}</div>
+        <div class="muted" v-if="overview">
+          Updated: {{ formatDate(overview.generated_at) }}
+        </div>
       </div>
-      <button :disabled="loading" @click="loadDashboard">{{ loading ? 'Loading...' : 'Reload' }}</button>
+      <button :disabled="loading" @click="loadDashboard">
+        {{ loading ? "Loading..." : "Reload" }}
+      </button>
     </div>
 
     <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
 
-    <div v-if="loading && !overview" class="card muted">Loading dashboard data...</div>
+    <div v-if="loading && !overview" class="card muted">
+      Loading dashboard data...
+    </div>
 
     <template v-if="overview">
       <div class="metrics-grid">
         <div class="card metric">
           <div class="metric-label">System Status</div>
-          <div :class="['metric-value', overview.health.status]">{{ overview.health.status }}</div>
+          <div :class="['metric-value', overview.health.status]">
+            {{ overview.health.status }}
+          </div>
         </div>
         <div class="card metric">
           <div class="metric-label">Queue Waiting</div>
-          <div class="metric-value">{{ overview.health.queues.upload.waiting ?? 0 }}</div>
+          <div class="metric-value">
+            {{ overview.health.queues.upload.waiting ?? 0 }}
+          </div>
         </div>
         <div class="card metric">
           <div class="metric-label">Today Received</div>
-          <div class="metric-value">{{ overview.today_summary.total_received }}</div>
+          <div class="metric-value">
+            {{ overview.today_summary.total_received }}
+          </div>
         </div>
         <div class="card metric">
           <div class="metric-label">Today Uploaded</div>
-          <div class="metric-value ok">{{ overview.today_summary.total_uploaded }}</div>
+          <div class="metric-value ok">
+            {{ overview.today_summary.total_uploaded }}
+          </div>
         </div>
         <div class="card metric">
           <div class="metric-label">Today Failed</div>
-          <div class="metric-value err-text">{{ overview.today_summary.total_failed }}</div>
+          <div class="metric-value err-text">
+            {{ overview.today_summary.total_failed }}
+          </div>
         </div>
         <div class="card metric">
           <div class="metric-label">Storage Used</div>
-          <div class="metric-value">{{ overview.health.staging.used_pct }}%</div>
-          <div class="muted">{{ overview.health.staging.used_gb }} / {{ overview.health.staging.cap_gb }} GB</div>
+          <div class="metric-value">
+            {{ overview.health.staging.used_pct }}%
+          </div>
+          <div class="muted">
+            {{ overview.health.staging.used_gb }} /
+            {{ overview.health.staging.cap_gb }} GB
+          </div>
         </div>
       </div>
 
@@ -45,11 +66,18 @@
         <div class="section-row">
           <div class="section-heading">
             <h3>Monthly Activity</h3>
-            <div class="muted">Uploaded media by reporting cycle in {{ heatmap?.year ?? currentYear }}</div>
+            <div class="muted">
+              Uploaded media by reporting cycle in
+              {{ heatmap?.year ?? currentYear }}
+            </div>
           </div>
           <div class="section-badges">
-            <span class="pill">{{ formatCycleRule(heatmap?.cycle_start_day) }}</span>
-            <span class="pill">{{ heatmap?.timezone ?? 'Asia/Ho_Chi_Minh' }}</span>
+            <span class="pill">{{
+              formatCycleRule(heatmap?.cycle_start_day)
+            }}</span>
+            <span class="pill">{{
+              heatmap?.timezone ?? "Asia/Ho_Chi_Minh"
+            }}</span>
           </div>
         </div>
 
@@ -63,7 +91,9 @@
           >
             <span class="heat-label">{{ month.label }}</span>
             <strong class="heat-total">{{ month.total_media }}</strong>
-            <span class="cycle-chip">{{ formatCycleRange(month.cycle_start, month.cycle_end, 'compact') }}</span>
+            <span class="cycle-chip">{{
+              formatCycleRange(month.cycle_start, month.cycle_end, "compact")
+            }}</span>
             <span class="muted heat-foot">{{ month.active_users }} active</span>
           </button>
         </div>
@@ -71,19 +101,117 @@
       </div>
 
       <div class="card">
+        <h3>Failed Uploads</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Date</th>
+                <th>Failed</th>
+                <th>Error</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in overview.failed_uploads"
+                :key="`${item.chat_id}_${item.sender_id}_${item.date}`"
+              >
+                <td>
+                  <RouterLink
+                    v-if="item.user_tu_id"
+                    class="user-link"
+                    :to="`/users/${item.user_tu_id}`"
+                  >
+                    <b>{{ item.tu_name }}</b>
+                  </RouterLink>
+                  <b v-else>{{ item.tu_name }}</b>
+                  <div class="muted">
+                    {{ item.tu_id || item.sender_id || "unknown" }}
+                  </div>
+                  <div class="muted">
+                    {{
+                      item.telegram_username
+                        ? `@${item.telegram_username}`
+                        : "no_username"
+                    }}
+                  </div>
+                </td>
+                <td>
+                  <div>{{ item.date }}</div>
+                  <div class="muted">chat {{ item.chat_id }}</div>
+                </td>
+                <td>{{ item.failed_count }}</td>
+                <td class="text-ellipsis">
+                  <div>{{ item.sample_error || "Unknown error" }}</div>
+                  <div class="muted">{{ item.sample_file_name || "-" }}</div>
+                </td>
+                <td class="action-cell">
+                  <div class="row-actions">
+                    <RouterLink
+                      v-if="item.user_tu_id"
+                      class="btn-link"
+                      :to="`/users/${item.user_tu_id}`"
+                    >
+                      Detail
+                    </RouterLink>
+                    <RouterLink
+                      class="btn-link"
+                      :to="{
+                        path: '/backfill',
+                        query: {
+                          chat_id: item.chat_id,
+                          from_date: item.date,
+                          to_date: item.date,
+                        },
+                      }"
+                    >
+                      Backfill
+                    </RouterLink>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!overview.failed_uploads.length">
+                <td colspan="5" class="muted">No failed uploads.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="section-row">
           <div class="section-heading">
             <h3>No Image Upload This Month</h3>
             <div class="muted">
-              Active users with 0 uploaded photos in {{ formatMonthLabel(missingUsers?.month) }}
-              <span v-if="missingUsers">({{ formatCycleRange(missingUsers.cycle_start, missingUsers.cycle_end) }})</span>
+              Active users with 0 uploaded photos in
+              {{ formatMonthLabel(missingUsers?.month) }}
+              <span v-if="missingUsers"
+                >({{
+                  formatCycleRange(
+                    missingUsers.cycle_start,
+                    missingUsers.cycle_end,
+                  )
+                }})</span
+              >
             </div>
           </div>
           <div class="selection-tools">
-            <button class="btn-secondary" type="button" @click="selectAllMissing" :disabled="!missingUsers?.items.length">
+            <button
+              class="btn-secondary"
+              type="button"
+              @click="selectAllMissing"
+              :disabled="!missingUsers?.items.length"
+            >
               Select All
             </button>
-            <button class="btn-secondary" type="button" @click="clearMissingSelection" :disabled="!missingSelectedIds.length">
+            <button
+              class="btn-secondary"
+              type="button"
+              @click="clearMissingSelection"
+              :disabled="!missingSelectedIds.length"
+            >
               Clear
             </button>
             <span class="muted">Selected: {{ missingSelectedIds.length }}</span>
@@ -101,21 +229,39 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in missingUsers?.items ?? []" :key="item.user_tu_id">
+              <tr
+                v-for="item in missingUsers?.items ?? []"
+                :key="item.user_tu_id"
+              >
                 <td class="checkbox-cell">
-                  <input type="checkbox" :value="item.user_tu_id" v-model="missingSelectedIds" />
+                  <input
+                    type="checkbox"
+                    :value="item.user_tu_id"
+                    v-model="missingSelectedIds"
+                  />
                 </td>
                 <td>
-                  <RouterLink class="user-link" :to="`/users/${item.user_tu_id}`">
+                  <RouterLink
+                    class="user-link"
+                    :to="`/users/${item.user_tu_id}`"
+                  >
                     <strong>{{ item.tu_name }}</strong>
                   </RouterLink>
                   <div class="muted">{{ item.tu_id }}</div>
                 </td>
-                <td>{{ item.telegram_username ? `@${item.telegram_username}` : 'no_username' }}</td>
+                <td>
+                  {{
+                    item.telegram_username
+                      ? `@${item.telegram_username}`
+                      : "no_username"
+                  }}
+                </td>
                 <td>{{ item.telegram_chat_id }}</td>
               </tr>
-              <tr v-if="!(missingUsers?.items?.length)">
-                <td colspan="4" class="muted">Every active user has uploaded at least one photo this month.</td>
+              <tr v-if="!missingUsers?.items?.length">
+                <td colspan="4" class="muted">
+                  Every active user has uploaded at least one photo this month.
+                </td>
               </tr>
             </tbody>
           </table>
@@ -135,13 +281,26 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="u in overview.today_summary.top_uploaders" :key="`${u.chat_id}_${u.sender_id}`">
+                <tr
+                  v-for="u in overview.today_summary.top_uploaders"
+                  :key="`${u.chat_id}_${u.sender_id}`"
+                >
                   <td>
-                    <RouterLink v-if="u.user_tu_id" class="user-link" :to="`/users/${u.user_tu_id}`">
+                    <RouterLink
+                      v-if="u.user_tu_id"
+                      class="user-link"
+                      :to="`/users/${u.user_tu_id}`"
+                    >
                       <b>{{ u.tu_name }}</b>
                     </RouterLink>
                     <b v-else>{{ u.tu_name }}</b>
-                    <div class="muted">{{ u.telegram_username ? `@${u.telegram_username}` : 'no_username' }}</div>
+                    <div class="muted">
+                      {{
+                        u.telegram_username
+                          ? `@${u.telegram_username}`
+                          : "no_username"
+                      }}
+                    </div>
                   </td>
                   <td>{{ u.chat_id }}</td>
                   <td>{{ u.total }}</td>
@@ -166,10 +325,15 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="f in overview.recent_failures" :key="`${f.error}-${f.last_at}`">
-                  <td class="text-ellipsis">{{ f.error || 'Unknown error' }}</td>
+                <tr
+                  v-for="f in overview.recent_failures"
+                  :key="`${f.error}-${f.last_at}`"
+                >
+                  <td class="text-ellipsis">
+                    {{ f.error || "Unknown error" }}
+                  </td>
                   <td>{{ f.count }}</td>
-                  <td>{{ f.last_at ? formatDate(f.last_at) : '-' }}</td>
+                  <td>{{ f.last_at ? formatDate(f.last_at) : "-" }}</td>
                 </tr>
                 <tr v-if="!overview.recent_failures.length">
                   <td colspan="3" class="muted">No failure records.</td>
@@ -198,9 +362,16 @@
             </thead>
             <tbody>
               <tr v-for="c in overview.campaigns" :key="c.campaign_id">
-                <td><code>{{ c.campaign_id }}</code></td>
-                <td><span :class="['status', c.status]">{{ c.status }}</span></td>
-                <td>✅ {{ c.success_targets }} / ❌ {{ c.failed_targets }} / 📦 {{ c.total_targets }}</td>
+                <td>
+                  <code>{{ c.campaign_id }}</code>
+                </td>
+                <td>
+                  <span :class="['status', c.status]">{{ c.status }}</span>
+                </td>
+                <td>
+                  ✅ {{ c.success_targets }} / ❌ {{ c.failed_targets }} / 📦
+                  {{ c.total_targets }}
+                </td>
                 <td>{{ c.media_count }}</td>
                 <td>{{ formatDate(c.created_at) }}</td>
               </tr>
@@ -230,13 +401,15 @@
               <tr v-for="a in overview.recent_activity" :key="a.id">
                 <td>{{ formatDate(a.created_at) }}</td>
                 <td>
-                  <div>{{ a.sender_id || 'unknown' }}</div>
+                  <div>{{ a.sender_id || "unknown" }}</div>
                   <div class="muted">chat {{ a.chat_id }}</div>
                 </td>
                 <td>{{ a.media_type }}</td>
-                <td><span :class="['status', a.status]">{{ a.status }}</span></td>
-                <td class="text-ellipsis">{{ a.file_name || '-' }}</td>
-                <td class="text-ellipsis">{{ a.error || '-' }}</td>
+                <td>
+                  <span :class="['status', a.status]">{{ a.status }}</span>
+                </td>
+                <td class="text-ellipsis">{{ a.file_name || "-" }}</td>
+                <td class="text-ellipsis">{{ a.error || "-" }}</td>
               </tr>
               <tr v-if="!overview.recent_activity.length">
                 <td colspan="6" class="muted">No activity.</td>
@@ -259,16 +432,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { computed, onMounted, ref } from "vue";
+import { RouterLink, useRouter } from "vue-router";
 import {
   apiGet,
   storeDashboardSelectedTargetIds,
   type DashboardOverview,
   type MissingImageUsersResponse,
   type MonthlyHeatmapResponse,
-} from '../services/api';
-import { formatCycleRange, formatCycleRule } from '../utils/reportingCycle';
+} from "../services/api";
+import { formatCycleRange, formatCycleRule } from "../utils/reportingCycle";
 
 const router = useRouter();
 const overview = ref<DashboardOverview | null>(null);
@@ -276,7 +449,7 @@ const heatmap = ref<MonthlyHeatmapResponse | null>(null);
 const missingUsers = ref<MissingImageUsersResponse | null>(null);
 const missingSelectedIds = ref<number[]>([]);
 const loading = ref(false);
-const errorMsg = ref('');
+const errorMsg = ref("");
 
 const currentYear = computed(() => new Date().getFullYear());
 const heatMax = computed(() => {
@@ -291,7 +464,7 @@ function formatDate(value: string): string {
 
 function formatMonthLabel(monthKey?: string | null): string {
   if (!monthKey) {
-    return 'this month';
+    return "this month";
   }
 
   const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
@@ -300,7 +473,10 @@ function formatMonthLabel(monthKey?: string | null): string {
   }
 
   const value = new Date(Number(match[1]), Number(match[2]) - 1, 1);
-  return value.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  return value.toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
 }
 
 function heatLevel(total: number): number {
@@ -326,42 +502,61 @@ function clearMissingSelection(): void {
 
 function sendSelectedToMessages(ids: number[]): void {
   storeDashboardSelectedTargetIds(ids);
-  void router.push({ path: '/messages', query: { source: 'dashboard' } });
+  void router.push({ path: "/messages", query: { source: "dashboard" } });
 }
 
 async function loadDashboard(): Promise<void> {
   loading.value = true;
-  errorMsg.value = '';
+  errorMsg.value = "";
 
-  const [overviewResult, heatmapResult, missingResult] = await Promise.allSettled([
-    apiGet<DashboardOverview>('/api/dashboard/overview'),
-    apiGet<MonthlyHeatmapResponse>('/api/dashboard/monthly-heatmap'),
-    apiGet<MissingImageUsersResponse>('/api/dashboard/current-month/missing-image-users?sortBy=tu_name&sortOrder=asc&limit=500&offset=0'),
-  ]);
+  const [overviewResult, heatmapResult, missingResult] =
+    await Promise.allSettled([
+      apiGet<DashboardOverview>("/api/dashboard/overview"),
+      apiGet<MonthlyHeatmapResponse>("/api/dashboard/monthly-heatmap"),
+      apiGet<MissingImageUsersResponse>(
+        "/api/dashboard/current-month/missing-image-users?sortBy=tu_name&sortOrder=asc&limit=500&offset=0",
+      ),
+    ]);
 
   const errors: string[] = [];
 
-  if (overviewResult.status === 'fulfilled') {
+  if (overviewResult.status === "fulfilled") {
     overview.value = overviewResult.value;
   } else {
-    errors.push(overviewResult.reason instanceof Error ? overviewResult.reason.message : String(overviewResult.reason));
+    errors.push(
+      overviewResult.reason instanceof Error
+        ? overviewResult.reason.message
+        : String(overviewResult.reason),
+    );
   }
 
-  if (heatmapResult.status === 'fulfilled') {
+  if (heatmapResult.status === "fulfilled") {
     heatmap.value = heatmapResult.value;
   } else {
-    errors.push(heatmapResult.reason instanceof Error ? heatmapResult.reason.message : String(heatmapResult.reason));
+    errors.push(
+      heatmapResult.reason instanceof Error
+        ? heatmapResult.reason.message
+        : String(heatmapResult.reason),
+    );
   }
 
-  if (missingResult.status === 'fulfilled') {
+  if (missingResult.status === "fulfilled") {
     missingUsers.value = missingResult.value;
-    const validIds = new Set(missingResult.value.items.map((item) => item.user_tu_id));
-    missingSelectedIds.value = missingSelectedIds.value.filter((id) => validIds.has(id));
+    const validIds = new Set(
+      missingResult.value.items.map((item) => item.user_tu_id),
+    );
+    missingSelectedIds.value = missingSelectedIds.value.filter((id) =>
+      validIds.has(id),
+    );
   } else {
-    errors.push(missingResult.reason instanceof Error ? missingResult.reason.message : String(missingResult.reason));
+    errors.push(
+      missingResult.reason instanceof Error
+        ? missingResult.reason.message
+        : String(missingResult.reason),
+    );
   }
 
-  errorMsg.value = errors.join('\n');
+  errorMsg.value = errors.join("\n");
   loading.value = false;
 }
 
@@ -464,6 +659,28 @@ h3 {
   text-decoration: underline;
 }
 
+.action-cell {
+  text-align: right;
+}
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  text-decoration: none;
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 9px 12px;
+}
+
 .heat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -483,7 +700,10 @@ h3 {
   background: #0f172a;
   color: #e5e7eb;
   cursor: pointer;
-  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  transition:
+    transform 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .heat-cell:hover {
@@ -519,23 +739,43 @@ h3 {
 }
 
 .heat-0 {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.78));
+  background: linear-gradient(
+    180deg,
+    rgba(15, 23, 42, 0.92),
+    rgba(15, 23, 42, 0.78)
+  );
 }
 
 .heat-1 {
-  background: linear-gradient(180deg, rgba(18, 44, 80, 0.95), rgba(17, 24, 39, 0.92));
+  background: linear-gradient(
+    180deg,
+    rgba(18, 44, 80, 0.95),
+    rgba(17, 24, 39, 0.92)
+  );
 }
 
 .heat-2 {
-  background: linear-gradient(180deg, rgba(18, 74, 112, 0.95), rgba(17, 24, 39, 0.92));
+  background: linear-gradient(
+    180deg,
+    rgba(18, 74, 112, 0.95),
+    rgba(17, 24, 39, 0.92)
+  );
 }
 
 .heat-3 {
-  background: linear-gradient(180deg, rgba(20, 102, 129, 0.95), rgba(17, 24, 39, 0.92));
+  background: linear-gradient(
+    180deg,
+    rgba(20, 102, 129, 0.95),
+    rgba(17, 24, 39, 0.92)
+  );
 }
 
 .heat-4 {
-  background: linear-gradient(180deg, rgba(22, 163, 74, 0.95), rgba(17, 24, 39, 0.92));
+  background: linear-gradient(
+    180deg,
+    rgba(22, 163, 74, 0.95),
+    rgba(17, 24, 39, 0.92)
+  );
 }
 
 .two-col {

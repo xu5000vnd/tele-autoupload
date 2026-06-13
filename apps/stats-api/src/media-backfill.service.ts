@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { UserTu, UserTuStatus } from '@prisma/client';
+import { MediaStatus, UserTu, UserTuStatus } from '@prisma/client';
 import { PrismaService } from '@shared/db/prisma.service';
 import { MediaService, ResolvedUploaderContext } from '@shared/services/media.service';
 import { TelegramGateway } from '@shared/telegram/telegram-gateway';
@@ -19,6 +19,12 @@ type UnknownSenderSummary = {
   sender_username: string | null;
   message_count: number;
   media_count: number;
+};
+
+type MediaScanSummary = {
+  missing: number;
+  failed: number;
+  existing: number;
 };
 
 @Injectable()
@@ -72,6 +78,7 @@ export class MediaBackfillService {
     let matchedMessages = 0;
     let mediaFound = 0;
     let queuedMedia = 0;
+    let retriedFailed = 0;
     let skippedExisting = 0;
     let processedMessages = 0;
 
@@ -84,16 +91,17 @@ export class MediaBackfillService {
 
       matchedMessages += 1;
       mediaFound += message.media.length;
-      const missingMedia = await this.countMissingMedia(message);
-      skippedExisting += message.media.length - missingMedia;
+      const mediaScan = await this.scanMedia(message);
+      queuedMedia += mediaScan.missing;
+      retriedFailed += mediaScan.failed;
+      skippedExisting += mediaScan.existing;
 
-      if (!missingMedia || input.dryRun) {
+      if ((!mediaScan.missing && !mediaScan.failed) || input.dryRun) {
         continue;
       }
 
       const patchedUser = await this.patchUserIdentifiers(matchedUser, message);
       await this.mediaService.processIncomingMessage(message, this.uploaderContext(patchedUser));
-      queuedMedia += missingMedia;
       processedMessages += 1;
     }
 
@@ -114,6 +122,7 @@ export class MediaBackfillService {
       matched_messages: matchedMessages,
       media_found: mediaFound,
       queued_media: queuedMedia,
+      retried_failed: retriedFailed,
       skipped_existing: skippedExisting,
       unknown_senders: [...unknownSenders.values()],
       processed_messages: processedMessages,
@@ -121,8 +130,13 @@ export class MediaBackfillService {
     };
   }
 
-  private async countMissingMedia(message: IncomingMessage): Promise<number> {
-    let missing = 0;
+  private async scanMedia(message: IncomingMessage): Promise<MediaScanSummary> {
+    const summary: MediaScanSummary = {
+      missing: 0,
+      failed: 0,
+      existing: 0,
+    };
+
     for (const media of message.media) {
       const uniqueField = media.uniqueId ?? `idx:${media.mediaIndex}`;
       const existing = await this.prisma.mediaItem.findUnique({
@@ -133,13 +147,22 @@ export class MediaBackfillService {
             tgFileUniqueId: uniqueField,
           },
         },
-        select: { id: true },
+        select: { id: true, status: true },
       });
       if (!existing) {
-        missing += 1;
+        summary.missing += 1;
+        continue;
       }
+
+      if (existing.status === MediaStatus.failed) {
+        summary.failed += 1;
+        continue;
+      }
+
+      summary.existing += 1;
     }
-    return missing;
+
+    return summary;
   }
 
   private matchMessageUser(

@@ -24,6 +24,7 @@ for a date range and recover media uploaded by those users without creating dupl
   - media found
   - media already existing
   - media queued
+  - failed media retried
   - unknown senders
 - Backfill must be idempotent.
 
@@ -38,11 +39,14 @@ identity used by normal ingestion:
 - fallback unique value `idx:<media_index>`
 
 Existing media is counted as `skipped_existing` and is not queued again.
+Existing failed media is counted as `retried_failed` and is retried only when the
+admin runs backfill, not during preview.
 
 ## Safety Rules
 
 - Backfill must not move `group_state.last_message_id` backward.
 - Dry run must not create `media_item` rows or upload jobs.
+- Dry run must not clear failed media status.
 - Unknown uploaders must be visible to admins instead of silently ignored.
 - Running the same backfill multiple times must not duplicate uploads.
 

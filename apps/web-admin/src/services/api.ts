@@ -207,6 +207,7 @@ export type MediaBackfillResult = {
   matched_messages: number;
   media_found: number;
   queued_media: number;
+  retried_failed: number;
   skipped_existing: number;
   unknown_senders: Array<{
     sender_id: string | null;
@@ -408,6 +409,19 @@ export type DashboardOverview = {
     error: string | null;
     count: number;
     last_at: string | null;
+  }>;
+  failed_uploads: Array<{
+    user_tu_id: number | null;
+    tu_id: string | null;
+    tu_name: string;
+    telegram_username: string | null;
+    sender_id: string | null;
+    chat_id: string;
+    date: string;
+    failed_count: number;
+    last_failed_at: string | null;
+    sample_error: string | null;
+    sample_file_name: string | null;
   }>;
   campaigns: Array<{
     campaign_id: string;

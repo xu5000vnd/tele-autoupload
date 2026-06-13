@@ -183,6 +183,45 @@ export function updateTarget(id: number, payload: SaveTargetRequest): Promise<Ta
   return apiPut<Target>(`/api/messages/targets/${id}`, payload);
 }
 
+export type MediaBackfillRequest = {
+  chat_id: string;
+  from_date: string;
+  to_date: string;
+  dry_run: boolean;
+};
+
+export type MediaBackfillResult = {
+  dry_run: boolean;
+  chat_id: string;
+  from_date: string;
+  to_date: string;
+  selected_users: Array<{
+    id: number;
+    tu_id: string;
+    tu_name: string;
+    telegram_user_id: string;
+    telegram_chat_id: string;
+    telegram_username: string | null;
+  }>;
+  scanned_messages: number;
+  matched_messages: number;
+  media_found: number;
+  queued_media: number;
+  skipped_existing: number;
+  unknown_senders: Array<{
+    sender_id: string | null;
+    sender_username: string | null;
+    message_count: number;
+    media_count: number;
+  }>;
+  processed_messages: number;
+  max_seen_message_id: string;
+};
+
+export function backfillMedia(payload: MediaBackfillRequest): Promise<MediaBackfillResult> {
+  return apiPost<MediaBackfillResult>('/api/backfill/media', payload);
+}
+
 export type TargetUploadHistoryDay = {
   date: string;
   total_media: number;

@@ -28,12 +28,20 @@ export class MediaService {
   ) {}
 
   async processIncomingMessage(message: IncomingMessage, uploader?: ResolvedUploaderContext): Promise<void> {
+    const existingGroup = await this.prisma.groupState.findUnique({
+      where: { chatId: message.chatId },
+      select: { lastMessageId: true },
+    });
+    const nextLastMessageId = existingGroup && existingGroup.lastMessageId > message.messageId
+      ? existingGroup.lastMessageId
+      : message.messageId;
+
     const groupState = await this.prisma.groupState.upsert({
       where: { chatId: message.chatId },
       update: {
         title: message.chatTitle,
         chatType: message.chatType as ChatType,
-        lastMessageId: message.messageId,
+        lastMessageId: nextLastMessageId,
       },
       create: {
         chatId: message.chatId,

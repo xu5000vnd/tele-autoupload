@@ -1,6 +1,7 @@
 import { createApp } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import App from './App.vue';
+import BackfillPage from './pages/BackfillPage.vue';
 import DashboardPage from './pages/DashboardPage.vue';
 import DashboardMonthDetailPage from './pages/DashboardMonthDetailPage.vue';
 import MessagesPage from './pages/MessagesPage.vue';
@@ -19,6 +20,7 @@ const router = createRouter({
     { path: '/users', component: UsersPage },
     { path: '/users/:id', component: UserDetailPage },
     { path: '/schedules', component: SchedulesPage },
+    { path: '/backfill', component: BackfillPage },
     { path: '/messages', component: MessagesPage },
     { path: '/histories', component: HistoriesPage },
     { path: '/histories/:campaignId', component: HistoryDetailPage },

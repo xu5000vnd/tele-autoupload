@@ -114,7 +114,7 @@ function parseTargetBody(body: TargetBody, requireCoreFields: boolean): TargetIn
 
   const username = readNullableString(body, 'telegram_username');
   if (username !== undefined) {
-    input.username = username?.replace(/^@+/, '') || null;
+    input.username = normalizeTelegramUsername(username);
   }
 
   const status = readStatus(body);
@@ -123,6 +123,14 @@ function parseTargetBody(body: TargetBody, requireCoreFields: boolean): TargetIn
   }
 
   return input;
+}
+
+function normalizeTelegramUsername(username: string | null): string | null {
+  if (!username) {
+    return null;
+  }
+
+  return username.trim().replace(/^@+/, '').toLowerCase() || null;
 }
 
 function readString(body: TargetBody, key: string, required: boolean): string | undefined {

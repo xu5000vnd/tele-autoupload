@@ -7,6 +7,7 @@ import { TelegramGateway } from '@shared/telegram/telegram-gateway';
 import { PrismaService } from '@shared/db/prisma.service';
 import { IncomingMessage } from '@shared/types/telegram';
 import { logger } from '@shared/utils/logger';
+import { rewindMessageCursor } from '@shared/utils/reconciliation';
 import { ChatType, Prisma, UserTuStatus } from '@prisma/client';
 
 @Injectable()
@@ -14,6 +15,7 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
   private reconnecting = false;
   private readonly unknownUserNotifyCooldownMs = 10 * 60 * 1000;
   private readonly unknownUserLastNotifiedAt = new Map<string, number>();
+  private readonly reconciliationLookbackMessages = 200n;
 
   constructor(
     private readonly telegramGateway: TelegramGateway,
@@ -221,12 +223,13 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
+      const afterMessageId = rewindMessageCursor(group.lastMessageId, this.reconciliationLookbackMessages);
       let messages: IncomingMessage[] = [];
       let maxSeenMessageId = group.lastMessageId;
       try {
         const fetched = await this.telegramGateway.fetchHistoryAfter({
           chatId: group.chatId,
-          afterMessageId: group.lastMessageId,
+          afterMessageId,
         });
         messages = fetched.messages;
         maxSeenMessageId = fetched.maxSeenMessageId;
@@ -236,6 +239,7 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
             err,
             chatId: group.chatId.toString(),
             lastMessageId: group.lastMessageId.toString(),
+            afterMessageId: afterMessageId.toString(),
           },
           'reconcile: failed to fetch history for group; skipping this cycle',
         );

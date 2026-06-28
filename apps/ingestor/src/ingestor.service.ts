@@ -10,6 +10,10 @@ import { logger } from '@shared/utils/logger';
 import { rewindMessageCursor } from '@shared/utils/reconciliation';
 import { ChatType, Prisma, UserTuStatus } from '@prisma/client';
 
+type HandleIncomingOptions = {
+  notifyUnknownUploader?: boolean;
+};
+
 @Injectable()
 export class IngestorService implements OnModuleInit, OnModuleDestroy {
   private reconnecting = false;
@@ -35,7 +39,7 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
     await this.telegramGateway.disconnect();
   }
 
-  private async handleIncoming(message: IncomingMessage): Promise<void> {
+  private async handleIncoming(message: IncomingMessage, options: HandleIncomingOptions = {}): Promise<void> {
     logger.debug(
       {
         chatId: message.chatId.toString(),
@@ -90,7 +94,9 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
         },
         'message from unregistered or inactive user — skipped',
       );
-      await this.notifyUnknownUploader(message);
+      if (options.notifyUnknownUploader ?? true) {
+        await this.notifyUnknownUploader(message);
+      }
       return;
     }
 
@@ -259,7 +265,7 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
       }
 
       for (const message of messages) {
-        await this.handleIncoming(message);
+        await this.handleIncoming(message, { notifyUnknownUploader: false });
       }
 
       await this.prisma.groupState.upsert({

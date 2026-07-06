@@ -23,6 +23,7 @@ export class TelegramGateway {
   private editMessageHandlers: MessageHandler[] = [];
   private updatesRegistered = false;
   private dialogsCacheWarmed = false;
+  private readonly unresolvedSenderEntityWarnings = new Set<string>();
 
   private buildClient(): TelegramClient {
     const { apiId, apiHash, session } = appConfig.telegram;
@@ -293,7 +294,11 @@ export class TelegramGateway {
           senderUsername = senderEntity.username.toLowerCase();
         }
       } catch {
-        logger.warn({ senderId: senderId?.toString() }, 'failed to resolve sender entity');
+        const senderKey = senderId?.toString() ?? msg.fromId.className;
+        if (!this.unresolvedSenderEntityWarnings.has(senderKey)) {
+          this.unresolvedSenderEntityWarnings.add(senderKey);
+          logger.warn({ senderId: senderId?.toString() }, 'failed to resolve sender entity');
+        }
       }
     }
 
@@ -467,6 +472,7 @@ export class TelegramGateway {
     }
 
     const info = this.rpcErrorInfo(lastErr);
+    const resolutionHint = this.peerResolutionHint(chatId, info.errorMessage);
     logger.warn(
       {
         operation,
@@ -474,6 +480,7 @@ export class TelegramGateway {
         candidates: candidateIds.map((x) => x.toString()),
         rpcCode: info.code,
         rpcMessage: info.errorMessage,
+        resolutionHint,
       },
       'all telegram peer candidates failed',
     );
@@ -492,6 +499,16 @@ export class TelegramGateway {
         ? raw.message
         : undefined;
     return { code, errorMessage };
+  }
+
+  private peerResolutionHint(chatId: bigint, errorMessage?: string): string | undefined {
+    if (!errorMessage?.includes('Could not find the input entity')) {
+      return undefined;
+    }
+    if (chatId >= 0n) {
+      return undefined;
+    }
+    return 'Telegram session cannot resolve this chat entity. Ensure the session account is a member of the chat, then regenerate or warm the session dialogs.';
   }
 
   private chatIdToPeer(chatId: bigint): Api.TypePeer {

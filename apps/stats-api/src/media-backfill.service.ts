@@ -138,13 +138,12 @@ export class MediaBackfillService {
     };
 
     for (const media of message.media) {
-      const uniqueField = media.uniqueId ?? `idx:${media.mediaIndex}`;
       const existing = await this.prisma.mediaItem.findUnique({
         where: {
-          chatId_messageId_tgFileUniqueId: {
+          chatId_messageId_mediaIndex: {
             chatId: message.chatId,
             messageId: message.messageId,
-            tgFileUniqueId: uniqueField,
+            mediaIndex: media.mediaIndex,
           },
         },
         select: { id: true, status: true },

@@ -59,10 +59,10 @@ export class MediaService {
       const mediaType = media.type as MediaType;
       const uniqueField = media.uniqueId ?? `idx:${media.mediaIndex}`;
       const uniqueWhere = {
-        chatId_messageId_tgFileUniqueId: {
+        chatId_messageId_mediaIndex: {
           chatId: message.chatId,
           messageId: message.messageId,
-          tgFileUniqueId: uniqueField,
+          mediaIndex: media.mediaIndex,
         },
       };
       const existedBefore = await this.prisma.mediaItem.findUnique({
@@ -77,6 +77,7 @@ export class MediaService {
           mimeType: media.mimeType,
           fileName: media.fileName,
           tgFileId: media.fileId,
+          tgFileUniqueId: uniqueField,
         },
         create: {
           chatId: message.chatId,

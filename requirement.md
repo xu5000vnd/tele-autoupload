@@ -817,15 +817,20 @@ services:
 ```
 
 ### Option B: PM2 (single machine, simpler)
-```json
-{
-  "apps": [
-    { "name": "ingestor", "script": "dist/apps/ingestor/main.js", "instances": 1 },
-    { "name": "downloader", "script": "dist/apps/worker-downloader/main.js", "instances": 1 },
-    { "name": "uploader", "script": "dist/apps/worker-uploader/main.js", "instances": 1 }
-  ]
-}
+```bash
+nvm use 22
+npm ci
+npm install --global pm2
+pm2 start ecosystem.config.cjs
+pm2 startup # Run the platform-specific command PM2 prints.
+pm2 save
 ```
+
+`ecosystem.config.cjs` runs the `ingestor`, `uploader`, and `stats` services as
+single-instance processes. PM2 restarts a service after a crash with exponential
+backoff and stops after ten unstable restart attempts. Run these commands as the
+same deployment user; after changing the ecosystem file, run
+`pm2 restart ecosystem.config.cjs --update-env` and then `pm2 save`.
 
 ### Deployment notes
 - Ingestor must run as a **single instance** (one MTProto session = one connection).

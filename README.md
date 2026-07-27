@@ -137,6 +137,54 @@ Install frontend dependencies once:
 npm --prefix apps/web-admin install
 ```
 
+### Run backend services with PM2
+
+PM2 supervises the three long-running backend services: `ingestor`, `uploader`,
+and `stats`. Redis and PostgreSQL remain managed by Docker Compose. The Vite
+web admin is a separate static frontend build and is not started by PM2.
+
+From the project root, after configuring `.env` and making Redis/PostgreSQL
+available:
+
+```bash
+nvm use
+npm ci
+npm install --global pm2
+npm run pm2:start
+```
+
+Check and operate the services with:
+
+```bash
+npm run pm2:status
+npm run pm2:logs
+pm2 logs ingestor
+npm run pm2:reload
+```
+
+Run `npm run pm2:reload` after changing `.env` or
+`ecosystem.config.cjs`. To restore the services after a machine reboot, run
+the platform-specific command printed by `pm2 startup`, then persist the
+current process list:
+
+```bash
+pm2 save
+```
+
+Keep the `.env` file readable only by the deployment user. Do not add
+credentials to `ecosystem.config.cjs` or commit them to the repository.
+
+To start the PM2 backend services and the local Vite web admin together in one
+terminal, run:
+
+```bash
+npm run start:all
+```
+
+The Vite server stops when you press `Ctrl-C`; the PM2 services continue until
+you stop them with PM2. Re-running this command restarts the PM2 backend
+services before starting the web admin.
+
 ---
 
 ## Environment Variables

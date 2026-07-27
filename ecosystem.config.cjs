@@ -4,7 +4,13 @@ const appDefaults = {
   cwd: __dirname,
   instances: 1,
   exec_mode: 'fork',
-  interpreter: path.join(__dirname, 'node_modules/.bin/ts-node'),
+  interpreter: process.execPath,
+  node_args: [
+    '-r',
+    path.join(__dirname, 'node_modules/ts-node/register'),
+    '-r',
+    path.join(__dirname, 'node_modules/tsconfig-paths/register'),
+  ],
   autorestart: true,
   min_uptime: '30s',
   max_restarts: 10,
@@ -12,6 +18,7 @@ const appDefaults = {
   kill_timeout: 10_000,
   env: {
     NODE_ENV: 'production',
+    TS_NODE_PROJECT: path.join(__dirname, 'tsconfig.json'),
   },
 };
 

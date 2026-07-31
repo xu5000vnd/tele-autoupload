@@ -35,7 +35,10 @@ export class TelegramGateway {
       new StringSession(validSession),
       apiId,
       apiHash,
-      { connectionRetries: 5 },
+      {
+        connectionRetries: 100,
+        useWSS: appConfig.telegram.useWss,
+      },
     );
   }
 

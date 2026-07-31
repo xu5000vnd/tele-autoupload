@@ -20,6 +20,16 @@ const baseSchema = z.object({
   TG_API_HASH: z.string().min(1),
   TG_SESSION_STRING: z.string().min(1),
   TG_NUMBER: z.string().min(1),
+  TG_USE_WSS: z.string().default('true').transform((value, ctx) => {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'TG_USE_WSS must be one of: true/false/1/0/yes/no/on/off',
+    });
+    return z.NEVER;
+  }),
   REDIS_URL: z.string().url(),
   DATABASE_URL: z.string().min(1),
   STAGING_DIR: z.string().min(1),
@@ -71,6 +81,7 @@ export function parseEnv(): {
     apiHash: string;
     session: string;
     phoneNumber: string;
+    useWss: boolean;
   };
   redisUrl: string;
   databaseUrl: string;
@@ -129,6 +140,7 @@ export function parseEnv(): {
       apiHash: env.TG_API_HASH,
       session: env.TG_SESSION_STRING,
       phoneNumber: env.TG_NUMBER,
+      useWss: env.TG_USE_WSS,
     },
     redisUrl: env.REDIS_URL,
     databaseUrl: env.DATABASE_URL,

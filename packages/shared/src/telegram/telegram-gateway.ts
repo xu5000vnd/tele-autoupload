@@ -36,7 +36,7 @@ export class TelegramGateway {
       apiId,
       apiHash,
       {
-        connectionRetries: 100,
+        connectionRetries: 10000,
         useWSS: appConfig.telegram.useWss,
       },
     );

@@ -26,7 +26,7 @@ const prompt = (question: string): Promise<string> =>
   console.log('');
 
   const client = new TelegramClient(new StringSession(''), apiId, apiHash, {
-    connectionRetries: 100,
+    connectionRetries: 10000,
   });
 
   await client.start({

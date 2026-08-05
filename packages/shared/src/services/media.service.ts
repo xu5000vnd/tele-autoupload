@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { ChatType, MediaItem, MediaStatus, MediaType } from '@prisma/client';
@@ -6,7 +7,7 @@ import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { JobEventLogService } from '@shared/services/job-event-log.service';
-import { TelegramGateway } from '@shared/telegram/telegram-gateway';
+import { TelegramGateway, TelegramReconciliationContext } from '@shared/telegram/telegram-gateway';
 import { IncomingMedia, IncomingMessage } from '@shared/types/telegram';
 import { makeDeterministicFileName } from '@shared/utils/file-naming';
 import { hashFileSha256 } from '@shared/utils/hash';
@@ -18,6 +19,17 @@ export interface ResolvedUploaderContext {
   tuName: string;
 }
 
+export type ProcessIncomingMessageOptions = {
+  manageGroupCursor?: boolean;
+};
+
+export type StaleRecoveryOptions = {
+  olderThanMs?: number;
+  deadlineAt?: number;
+  maxItems?: number;
+  shouldContinue?: () => boolean;
+};
+
 @Injectable()
 export class MediaService {
   constructor(
@@ -27,7 +39,12 @@ export class MediaService {
     private readonly telegramGateway: TelegramGateway,
   ) {}
 
-  async processIncomingMessage(message: IncomingMessage, uploader?: ResolvedUploaderContext): Promise<void> {
+  async processIncomingMessage(
+    message: IncomingMessage,
+    uploader?: ResolvedUploaderContext,
+    options: ProcessIncomingMessageOptions = {},
+  ): Promise<void> {
+    const manageGroupCursor = options.manageGroupCursor ?? true;
     const existingGroup = await this.prisma.groupState.findUnique({
       where: { chatId: message.chatId },
       select: { lastMessageId: true },
@@ -41,13 +58,13 @@ export class MediaService {
       update: {
         title: message.chatTitle,
         chatType: message.chatType as ChatType,
-        lastMessageId: nextLastMessageId,
+        ...(manageGroupCursor ? { lastMessageId: nextLastMessageId } : {}),
       },
       create: {
         chatId: message.chatId,
         title: message.chatTitle,
         chatType: message.chatType as ChatType,
-        lastMessageId: message.messageId,
+        lastMessageId: manageGroupCursor ? message.messageId : 0n,
       },
     });
 
@@ -115,16 +132,7 @@ export class MediaService {
         'media item queued for processing',
       );
 
-      if (
-        existedBefore &&
-        (
-          mediaItem.status === MediaStatus.queued ||
-          mediaItem.status === MediaStatus.downloading ||
-          mediaItem.status === MediaStatus.uploading ||
-          mediaItem.status === MediaStatus.downloaded ||
-          mediaItem.status === MediaStatus.uploaded
-        )
-      ) {
+      if (existedBefore && (mediaItem.status === MediaStatus.uploaded || mediaItem.status === MediaStatus.downloaded || mediaItem.status === MediaStatus.uploading)) {
         logger.info(
           this.buildLogContext({
             message,
@@ -138,17 +146,24 @@ export class MediaService {
           'media item reprocessing skipped by idempotency guard',
         );
 
-        if (mediaItem.localPath && mediaItem.sizeBytes) {
-          await this.enqueueUploadFromStoredFile(message, media, mediaItem, uploader, 'existing-local-media');
+        if (mediaItem.status !== MediaStatus.uploaded) {
+          const stagedFileExists = mediaItem.localPath ? await this.pathExists(mediaItem.localPath) : false;
+          if (this.canResumeUpload(mediaItem, stagedFileExists)) {
+            await this.enqueueUploadFromStoredFile(message, media, mediaItem, uploader, 'existing-local-media');
+          } else {
+            await this.enqueueDownload(message, media, mediaItem, uploader, 'missing-staged-media');
+          }
         }
         continue;
       }
 
-      await this.downloadAndQueueMedia(message, media, mediaItem, uploader);
+      await this.enqueueDownload(message, media, mediaItem, uploader, existedBefore ? 'replayed-media' : 'new-media');
     }
   }
 
-  async recoverStaleMediaItems(olderThanMs = appConfig.reconciliationIntervalMin * 60_000): Promise<number> {
+  async recoverStaleMediaItems(input: number | StaleRecoveryOptions = appConfig.reconciliationIntervalMin * 60_000): Promise<number> {
+    const options = typeof input === 'number' ? { olderThanMs: input } : input;
+    const olderThanMs = options.olderThanMs ?? appConfig.reconciliationIntervalMin * 60_000;
     const cutoff = new Date(Date.now() - olderThanMs);
     const staleItems = await this.prisma.mediaItem.findMany({
       where: {
@@ -158,6 +173,7 @@ export class MediaService {
             MediaStatus.downloading,
             MediaStatus.downloaded,
             MediaStatus.uploading,
+            MediaStatus.failed,
           ],
         },
         OR: [
@@ -171,7 +187,7 @@ export class MediaService {
         ],
       },
       orderBy: { createdAt: 'asc' },
-      take: 50,
+      take: options.maxItems ?? 50,
     });
 
     if (!staleItems.length) {
@@ -186,9 +202,18 @@ export class MediaService {
       'found stale media items eligible for recovery',
     );
 
+    let recoveredCount = 0;
     for (const item of staleItems) {
+      if (
+        (options.deadlineAt && Date.now() >= options.deadlineAt) ||
+        (options.shouldContinue && !options.shouldContinue())
+      ) {
+        break;
+      }
       try {
-        await this.recoverMediaItem(item);
+        if (await this.recoverMediaItem(item)) {
+          recoveredCount += 1;
+        }
       } catch (err) {
         logger.error(
           {
@@ -203,10 +228,16 @@ export class MediaService {
       }
     }
 
-    return staleItems.length;
+    return recoveredCount;
   }
 
-  private async recoverMediaItem(item: MediaItem): Promise<void> {
+  private async recoverMediaItem(snapshot: MediaItem): Promise<boolean> {
+    // Re-read before mutating so a stale sweep cannot overwrite an item that
+    // completed after the initial query.
+    const item = await this.prisma.mediaItem.findUnique({ where: { id: snapshot.id } });
+    if (!item || !this.isRecoverableStatus(item.status)) {
+      return false;
+    }
     const uploader = await this.resolveUploaderContext(item.senderId, item.chatId);
     const message = await this.buildMessageFromMediaItem(item);
 
@@ -220,15 +251,16 @@ export class MediaService {
         },
         'stale media item recovery skipped because group metadata is unavailable',
       );
-      return;
+      return false;
     }
 
     const media = this.buildMediaFromItem(item);
     const fileExists = item.localPath ? await this.pathExists(item.localPath) : false;
+    const resumeUpload = this.canResumeUpload(item, fileExists);
 
     logger.warn(
       {
-        recoveryAction: this.recoveryActionForItem(item.status, fileExists),
+        recoveryAction: resumeUpload ? 'resume-upload' : 'resume-download',
         recoveryReason: 'stale-item-timeout',
         ...this.buildLogContext({
           message,
@@ -244,45 +276,66 @@ export class MediaService {
       'recovering stale media item',
     );
 
-    if (
-      (item.status === MediaStatus.downloaded || item.status === MediaStatus.uploading) &&
-      item.localPath &&
-      fileExists &&
-      item.sizeBytes
-    ) {
-      await this.prisma.mediaItem.update({
-        where: { id: item.id },
-        data: {
-          status: MediaStatus.downloaded,
-          error: null,
-          failedAt: null,
-          lastRetryAt: new Date(),
-          retryCount: { increment: 1 },
-          updatedAt: new Date(),
-        },
-      });
+    const updatedAt = new Date();
+    const updateResult = await this.prisma.mediaItem.updateMany({
+      where: {
+        id: item.id,
+        // Claim against the originally selected stale row. A heartbeat or
+        // another worker's transition after the sweep began invalidates it.
+        status: snapshot.status,
+        updatedAt: snapshot.updatedAt,
+      },
+      data: {
+        status: resumeUpload ? MediaStatus.downloaded : MediaStatus.queued,
+        downloadLeaseToken: null,
+        error: resumeUpload ? null : 'stale media item queued for download recovery',
+        failedAt: null,
+        lastRetryAt: updatedAt,
+        retryCount: { increment: 1 },
+        updatedAt,
+      },
+    });
+    if (updateResult.count !== 1) {
+      logger.debug({ mediaItemId: item.id }, 'stale media item changed before recovery claim; skipping');
+      return false;
+    }
+
+    if (resumeUpload) {
       await this.eventLogService.log(item.id, 'retried', {
         reason: 'stale-upload-recovery',
       });
       await this.enqueueUploadFromStoredFile(message, media, item, uploader, 'stale-upload-recovery');
-      return;
+      return true;
     }
 
-    await this.prisma.mediaItem.update({
-      where: { id: item.id },
-      data: {
-        status: MediaStatus.failed,
-        error: 'stale media item reset for recovery',
-        failedAt: new Date(),
-        lastRetryAt: new Date(),
-        retryCount: { increment: 1 },
-        updatedAt: new Date(),
-      },
-    });
     await this.eventLogService.log(item.id, 'retried', {
       reason: 'stale-download-recovery',
     });
-    await this.downloadAndQueueMedia(message, media, item, uploader);
+    await this.enqueueDownload(message, media, item, uploader, 'stale-download-recovery');
+    return true;
+  }
+
+  async downloadMediaItem(mediaItemId: string, context?: TelegramReconciliationContext): Promise<void> {
+    const mediaItem = await this.prisma.mediaItem.findUnique({ where: { id: mediaItemId } });
+    if (!mediaItem || mediaItem.status === MediaStatus.uploaded) {
+      return;
+    }
+
+    const message = await this.buildMessageFromMediaItem(mediaItem);
+    if (!message) {
+      throw new Error(`Missing active group metadata for media item ${mediaItem.id}`);
+    }
+    const uploader = await this.resolveUploaderContext(mediaItem.senderId, mediaItem.chatId);
+    const media = this.buildMediaFromItem(mediaItem);
+    const stagedFileExists = mediaItem.localPath ? await this.pathExists(mediaItem.localPath) : false;
+    if (this.canResumeUpload(mediaItem, stagedFileExists)) {
+      await this.enqueueUploadFromStoredFile(message, media, mediaItem, uploader, 'download-job-existing-local-media');
+      return;
+    }
+    if (mediaItem.status === MediaStatus.downloading || mediaItem.status === MediaStatus.uploading) {
+      return;
+    }
+    await this.downloadAndQueueMedia(message, media, mediaItem, uploader, context);
   }
 
   private async downloadAndQueueMedia(
@@ -290,6 +343,7 @@ export class MediaService {
     media: IncomingMedia,
     mediaItem: MediaItem,
     uploader?: ResolvedUploaderContext,
+    context?: TelegramReconciliationContext,
   ): Promise<void> {
     const fileName = makeDeterministicFileName({
       date: mediaItem.date,
@@ -300,55 +354,87 @@ export class MediaService {
       mimeType: mediaItem.mimeType ?? undefined,
     });
     const chatDir = path.join(appConfig.stagingDir, `chat_${message.chatId.toString()}`);
-    await fs.mkdir(chatDir, { recursive: true });
     const localPath = path.join(chatDir, fileName);
 
-    await this.prisma.mediaItem.update({
-      where: { id: mediaItem.id },
+    const claimTime = new Date();
+    const downloadLeaseToken = randomUUID();
+    const claimResult = await this.prisma.mediaItem.updateMany({
+      where: {
+        id: mediaItem.id,
+        status: mediaItem.status,
+        updatedAt: mediaItem.updatedAt,
+      },
       data: {
         status: MediaStatus.downloading,
+        downloadLeaseToken,
         error: null,
         failedAt: null,
-        updatedAt: new Date(),
+        updatedAt: claimTime,
       },
     });
-    await this.eventLogService.log(mediaItem.id, 'download_start', {});
+    if (claimResult.count !== 1) {
+      logger.debug({ mediaItemId: mediaItem.id }, 'download job skipped because another worker owns the media item');
+      return;
+    }
 
-    logger.info(
-      this.buildLogContext({
-        message,
-        media,
-        uploader,
-        mediaItemId: mediaItem.id,
-        tgFileUniqueId: mediaItem.tgFileUniqueId ?? `idx:${mediaItem.mediaIndex}`,
-        mediaStatus: MediaStatus.downloading,
-        localPath,
-      }),
-      'media download starting',
-    );
-
+    let downloadPersisted = false;
+    let completedAt: Date | undefined;
+    const heartbeat = setInterval(() => {
+      void this.refreshDownloadHeartbeat(mediaItem.id, downloadLeaseToken);
+    }, appConfig.downloadHeartbeatMs);
     try {
+      await this.eventLogService.log(mediaItem.id, 'download_start', {});
+      await fs.mkdir(chatDir, { recursive: true });
+
+      logger.info(
+        this.buildLogContext({
+          message,
+          media,
+          uploader,
+          mediaItemId: mediaItem.id,
+          tgFileUniqueId: mediaItem.tgFileUniqueId ?? `idx:${mediaItem.mediaIndex}`,
+          mediaStatus: MediaStatus.downloading,
+          localPath,
+        }),
+        'media download starting',
+      );
+
       const { sizeBytes } = await this.telegramGateway.downloadMediaToFile({
         chatId: message.chatId,
         messageId: Number(message.messageId),
         mediaIndex: media.mediaIndex,
         destinationPath: localPath,
-      });
+      }, context);
 
       const sha256 = await hashFileSha256(localPath);
 
-      await this.prisma.mediaItem.update({
-        where: { id: mediaItem.id },
+      const completionTime = new Date();
+      const completionResult = await this.prisma.mediaItem.updateMany({
+        where: {
+          id: mediaItem.id,
+          status: MediaStatus.downloading,
+          downloadLeaseToken,
+        },
         data: {
           status: MediaStatus.downloaded,
+          downloadLeaseToken: null,
           localPath,
           sizeBytes,
           sha256,
           error: null,
           failedAt: null,
-          updatedAt: new Date(),
+          updatedAt: completionTime,
         },
       });
+      if (completionResult.count !== 1) {
+        logger.warn(
+          { mediaItemId: mediaItem.id },
+          'download completed after media item ownership was lost; skipping handoff',
+        );
+        return;
+      }
+      downloadPersisted = true;
+      completedAt = completionTime;
 
       await this.eventLogService.log(mediaItem.id, 'download_done', {
         localPath,
@@ -383,6 +469,7 @@ export class MediaService {
         'download-complete',
       );
     } catch (err) {
+      const errorMessage = (err as Error).message;
       logger.error(
         {
           err,
@@ -392,25 +479,113 @@ export class MediaService {
             uploader,
             mediaItemId: mediaItem.id,
             tgFileUniqueId: mediaItem.tgFileUniqueId ?? `idx:${mediaItem.mediaIndex}`,
-            mediaStatus: MediaStatus.failed,
+            mediaStatus: downloadPersisted ? MediaStatus.downloaded : MediaStatus.failed,
             localPath,
           }),
         },
         'media download failed',
       );
-      await this.prisma.mediaItem.update({
-        where: { id: mediaItem.id },
+      await this.recordDownloadFailure(
+        mediaItem.id,
+        errorMessage,
+        downloadPersisted,
+        downloadLeaseToken,
+        completedAt,
+      );
+      throw err;
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  private async refreshDownloadHeartbeat(mediaItemId: string, downloadLeaseToken: string): Promise<void> {
+    try {
+      await this.prisma.mediaItem.updateMany({
+        where: {
+          id: mediaItemId,
+          status: MediaStatus.downloading,
+          downloadLeaseToken,
+        },
+        data: { updatedAt: new Date() },
+      });
+    } catch (err) {
+      logger.warn({ err, mediaItemId }, 'failed to refresh active download heartbeat');
+    }
+  }
+
+  private async recordDownloadFailure(
+    mediaItemId: string,
+    errorMessage: string,
+    downloadPersisted: boolean,
+    downloadLeaseToken: string,
+    completedAt?: Date,
+  ): Promise<void> {
+    const now = new Date();
+    try {
+      if (downloadPersisted && !completedAt) {
+        logger.error({ mediaItemId }, 'missing completion timestamp while recording post-download failure');
+        return;
+      }
+      const result = await this.prisma.mediaItem.updateMany({
+        where: downloadPersisted
+          ? {
+            id: mediaItemId,
+            status: MediaStatus.downloaded,
+            updatedAt: completedAt,
+          }
+          : {
+            id: mediaItemId,
+            status: MediaStatus.downloading,
+            downloadLeaseToken,
+          },
         data: {
-          status: MediaStatus.failed,
-          error: (err as Error).message,
-          failedAt: new Date(),
+          // Once the staged file is durable, downstream queue/log failures must
+          // not discard it or force another Telegram download.
+          status: downloadPersisted ? MediaStatus.downloaded : MediaStatus.failed,
+          downloadLeaseToken: null,
+          error: errorMessage,
+          failedAt: downloadPersisted ? null : now,
           retryCount: { increment: 1 },
-          lastRetryAt: new Date(),
-          updatedAt: new Date(),
+          lastRetryAt: now,
+          updatedAt: now,
         },
       });
-      await this.eventLogService.log(mediaItem.id, 'failed', { error: (err as Error).message });
+      if (result.count === 1) {
+        await this.eventLogService.log(mediaItemId, downloadPersisted ? 'retried' : 'failed', {
+          error: errorMessage,
+          reason: downloadPersisted ? 'post-download-handoff-failed' : undefined,
+        });
+      }
+    } catch (recordError) {
+      logger.error({ err: recordError, mediaItemId }, 'failed to record media download failure');
     }
+  }
+
+  private async enqueueDownload(
+    message: IncomingMessage,
+    media: IncomingMedia,
+    mediaItem: Pick<MediaItem, 'id' | 'status' | 'mediaIndex' | 'tgFileUniqueId'>,
+    uploader: ResolvedUploaderContext | undefined,
+    reason: string,
+  ): Promise<void> {
+    await this.queueService.enqueueDownload({
+      mediaItemId: mediaItem.id,
+    });
+
+    logger.info(
+      {
+        enqueueReason: reason,
+        ...this.buildLogContext({
+          message,
+          media,
+          uploader,
+          mediaItemId: mediaItem.id,
+          tgFileUniqueId: mediaItem.tgFileUniqueId ?? `idx:${mediaItem.mediaIndex}`,
+          mediaStatus: mediaItem.status,
+        }),
+      },
+      'download job enqueued for media item',
+    );
   }
 
   private async enqueueUploadFromStoredFile(
@@ -526,11 +701,23 @@ export class MediaService {
     }
   }
 
-  private recoveryActionForItem(status: MediaStatus, fileExists: boolean): 'resume-upload' | 'resume-download' {
-    if ((status === MediaStatus.downloaded || status === MediaStatus.uploading) && fileExists) {
-      return 'resume-upload';
-    }
-    return 'resume-download';
+  private isRecoverableStatus(status: MediaStatus): boolean {
+    return status === MediaStatus.queued ||
+      status === MediaStatus.downloading ||
+      status === MediaStatus.downloaded ||
+      status === MediaStatus.uploading ||
+      status === MediaStatus.failed;
+  }
+
+  private canResumeUpload(item: MediaItem, fileExists: boolean): boolean {
+    return (
+      (item.status === MediaStatus.downloaded ||
+        item.status === MediaStatus.uploading ||
+        item.status === MediaStatus.failed) &&
+      !!item.localPath &&
+      fileExists &&
+      !!item.sizeBytes
+    );
   }
 
   private buildLogContext(input: {

@@ -108,6 +108,7 @@ model MediaItem {
   driveWebUrl      String?        @map("drive_web_url")
   error            String?
   failedAt         DateTime?      @map("failed_at")
+  downloadLeaseToken String?      @map("download_lease_token")
   priority         Int            @default(0)
   createdAt        DateTime       @default(now()) @map("created_at")
   updatedAt        DateTime?      @map("updated_at")

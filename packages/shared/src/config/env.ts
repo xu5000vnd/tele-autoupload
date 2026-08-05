@@ -42,6 +42,24 @@ const baseSchema = z.object({
   HIGH_WATERMARK_PCT: z.coerce.number().min(1).max(99).default(80),
   CLEANUP_AFTER_HOURS: z.coerce.number().positive().default(2),
   RECONCILIATION_INTERVAL_MIN: z.coerce.number().int().positive().default(10),
+  RECONCILIATION_LEASE_TTL_MS: z.coerce.number().int().positive().default(540_000),
+  RECONCILIATION_LEASE_RENEWAL_MS: z.coerce.number().int().positive().default(30_000),
+  RECONCILIATION_RUN_BUDGET_MS: z.coerce.number().int().positive().default(480_000),
+  RECONCILIATION_STALE_BUDGET_MS: z.coerce.number().int().nonnegative().default(60_000),
+  RECONCILIATION_MAX_CHATS_PER_RUN: z.coerce.number().int().positive().default(500),
+  RECONCILIATION_MAX_PAGES_PER_CHAT: z.coerce.number().int().positive().default(3),
+  // GramJS retrieves history in 100-message chunks. Keeping this at one chunk
+  // makes each page one rate-gated Telegram operation.
+  RECONCILIATION_HISTORY_PAGE_SIZE: z.coerce.number().int().positive().max(100).default(100),
+  RECONCILIATION_NORMAL_LOOKBACK_MESSAGES: z.coerce.number().int().nonnegative().default(50),
+  RECONCILIATION_RECOVERY_LOOKBACK_MESSAGES: z.coerce.number().int().nonnegative().default(200),
+  RECONCILIATION_CHAT_CONCURRENCY: z.coerce.number().int().min(1).max(3).default(3),
+  RECONCILIATION_TELEGRAM_REQUESTS_PER_SEC: z.coerce.number().int().positive().default(5),
+  TELEGRAM_REQUEST_SLOT_TTL_MS: z.coerce.number().int().min(1_000).default(120_000),
+  DOWNLOAD_CONCURRENCY: z.coerce.number().int().min(1).max(3).default(3),
+  DOWNLOAD_MAX_RETRIES: z.coerce.number().int().min(0).default(8),
+  DOWNLOAD_INITIAL_BACKOFF_MS: z.coerce.number().int().positive().default(10000),
+  DOWNLOAD_HEARTBEAT_MS: z.coerce.number().int().min(1_000).default(60_000),
   STATS_API_PORT: z.coerce.number().int().positive().default(3100),
   STATS_API_AUTH_TOKEN: z.string().default(''),
   ADMIN_WEB_USERNAME: z.string().default(''),
@@ -95,6 +113,24 @@ export function parseEnv(): {
   highWatermarkPct: number;
   cleanupAfterHours: number;
   reconciliationIntervalMin: number;
+  reconciliation: {
+    leaseTtlMs: number;
+    leaseRenewalMs: number;
+    runBudgetMs: number;
+    staleBudgetMs: number;
+    maxChatsPerRun: number;
+    maxPagesPerChat: number;
+    historyPageSize: number;
+    normalLookbackMessages: bigint;
+    recoveryLookbackMessages: bigint;
+    chatConcurrency: number;
+    telegramRequestsPerSec: number;
+    requestSlotTtlMs: number;
+  };
+  downloadConcurrency: number;
+  downloadMaxRetries: number;
+  downloadInitialBackoffMs: number;
+  downloadHeartbeatMs: number;
   statsApiPort: number;
   statsApiAuthToken: string;
   adminWebUsername: string;
@@ -130,6 +166,22 @@ export function parseEnv(): {
     throw new Error('playwright strategy requires PLAYWRIGHT_PROFILE_DIR');
   }
 
+  if (env.RECONCILIATION_LEASE_RENEWAL_MS >= env.RECONCILIATION_LEASE_TTL_MS) {
+    throw new Error('RECONCILIATION_LEASE_RENEWAL_MS must be less than RECONCILIATION_LEASE_TTL_MS');
+  }
+  if (env.RECONCILIATION_RUN_BUDGET_MS >= env.RECONCILIATION_LEASE_TTL_MS) {
+    throw new Error('RECONCILIATION_RUN_BUDGET_MS must be less than RECONCILIATION_LEASE_TTL_MS');
+  }
+  if (env.RECONCILIATION_RUN_BUDGET_MS >= env.RECONCILIATION_INTERVAL_MIN * 60_000) {
+    throw new Error('RECONCILIATION_RUN_BUDGET_MS must be less than the reconciliation interval');
+  }
+  if (env.RECONCILIATION_STALE_BUDGET_MS >= env.RECONCILIATION_RUN_BUDGET_MS) {
+    throw new Error('RECONCILIATION_STALE_BUDGET_MS must be less than RECONCILIATION_RUN_BUDGET_MS');
+  }
+  if (env.RECONCILIATION_NORMAL_LOOKBACK_MESSAGES > env.RECONCILIATION_RECOVERY_LOOKBACK_MESSAGES) {
+    throw new Error('RECONCILIATION_NORMAL_LOOKBACK_MESSAGES must not exceed RECONCILIATION_RECOVERY_LOOKBACK_MESSAGES');
+  }
+
   return {
     nodeEnv: env.NODE_ENV,
     logLevel: env.LOG_LEVEL,
@@ -154,6 +206,24 @@ export function parseEnv(): {
     highWatermarkPct: env.HIGH_WATERMARK_PCT,
     cleanupAfterHours: env.CLEANUP_AFTER_HOURS,
     reconciliationIntervalMin: env.RECONCILIATION_INTERVAL_MIN,
+    reconciliation: {
+      leaseTtlMs: env.RECONCILIATION_LEASE_TTL_MS,
+      leaseRenewalMs: env.RECONCILIATION_LEASE_RENEWAL_MS,
+      runBudgetMs: env.RECONCILIATION_RUN_BUDGET_MS,
+      staleBudgetMs: env.RECONCILIATION_STALE_BUDGET_MS,
+      maxChatsPerRun: env.RECONCILIATION_MAX_CHATS_PER_RUN,
+      maxPagesPerChat: env.RECONCILIATION_MAX_PAGES_PER_CHAT,
+      historyPageSize: env.RECONCILIATION_HISTORY_PAGE_SIZE,
+      normalLookbackMessages: BigInt(env.RECONCILIATION_NORMAL_LOOKBACK_MESSAGES),
+      recoveryLookbackMessages: BigInt(env.RECONCILIATION_RECOVERY_LOOKBACK_MESSAGES),
+      chatConcurrency: env.RECONCILIATION_CHAT_CONCURRENCY,
+      telegramRequestsPerSec: env.RECONCILIATION_TELEGRAM_REQUESTS_PER_SEC,
+      requestSlotTtlMs: env.TELEGRAM_REQUEST_SLOT_TTL_MS,
+    },
+    downloadConcurrency: env.DOWNLOAD_CONCURRENCY,
+    downloadMaxRetries: env.DOWNLOAD_MAX_RETRIES,
+    downloadInitialBackoffMs: env.DOWNLOAD_INITIAL_BACKOFF_MS,
+    downloadHeartbeatMs: env.DOWNLOAD_HEARTBEAT_MS,
     statsApiPort: env.STATS_API_PORT,
     statsApiAuthToken: env.STATS_API_AUTH_TOKEN,
     adminWebUsername: env.ADMIN_WEB_USERNAME,

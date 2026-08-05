@@ -9,25 +9,28 @@ Telegram Group
      │
      │  (photos / videos)
      ▼
-┌─────────────┐     download inline     ┌─────────────────┐
-│  Ingestor   │ ──────────────────────► │  Google Drive   │
-│  (GramJS)   │                         │  (via uploader) │
-└─────────────┘                         └─────────────────┘
-     │
-     │  enqueue upload job
-     ▼
-┌─────────────────┐     REST API / Bot   ┌───────────────┐
-│    Uploader     │                      │   Stats API   │
-│   (BullMQ)      │                      │  + Telegram   │
-└─────────────────┘                      │     Bot       │
-                                         └───────────────┘
+┌─────────────┐  persist + enqueue  ┌─────────────────┐
+│  Ingestor   │ ───────────────────►│ Download queue  │
+│  (GramJS)   │                     └────────┬────────┘
+└──────┬──────┘                              │
+       │ PostgreSQL                           ▼
+       ▼                            ┌─────────────────┐
+┌─────────────┐                     │   Downloader    │
+│ Media state │                     │ stage + hash    │
+└─────────────┘                     └────────┬────────┘
+                                             │ enqueue upload
+                                             ▼
+                                    ┌─────────────────┐     ┌─────────────┐
+                                    │ Upload queue    │ ──► │  Uploader   │ ──► Google Drive
+                                    └─────────────────┘     └─────────────┘
 ```
 
 ### Services
 
 | Service | Description |
 |---|---|
-| `ingestor` | Listens for new Telegram messages via GramJS, downloads media inline, enqueues upload jobs |
+| `ingestor` | Listens for Telegram messages, persists media metadata, enqueues downloads, and reconciles missed history |
+| `worker-downloader` | BullMQ worker that downloads, stages, hashes, and enqueues media for upload |
 | `worker-uploader` | BullMQ worker that uploads files to Google Drive |
 | `stats-api` | REST API for monitoring + Telegram bot for daily summaries |
 
@@ -108,10 +111,11 @@ VALUES ('user2', 'Jane', 'TU Media General/[0] Jane', 0, -1001234567890, 'jane_d
 npm run dev
 ```
 
-This starts all three services concurrently with colored labels:
+This starts all four services concurrently with colored labels:
 
 ```
 [ingestor]  blue
+[downloader] magenta
 [uploader]  yellow
 [stats]     cyan
 ```
@@ -126,6 +130,7 @@ Or start individually:
 
 ```bash
 npm run start:ingestor
+npm run start:downloader
 npm run start:uploader
 npm run start:stats
 npm run start:web
@@ -139,7 +144,7 @@ npm --prefix apps/web-admin install
 
 ### Run backend services with PM2
 
-PM2 supervises the three long-running backend services: `ingestor`, `uploader`,
+PM2 supervises the four long-running backend services: `ingestor`, `downloader`, `uploader`,
 and `stats`. Redis and PostgreSQL remain managed by Docker Compose. The Vite
 web admin is a separate static frontend build and is not started by PM2.
 
@@ -208,10 +213,34 @@ services before starting the web admin.
 | `STATS_API_PORT` | optional | Stats API port (default: `3100`) |
 | `STATS_API_AUTH_TOKEN` | optional | Bearer token for the stats API |
 | `UPLOAD_CONCURRENCY` | optional | Parallel upload jobs (default: `6`) |
+| `DOWNLOAD_CONCURRENCY` | optional | Parallel downloader jobs; keep at or below `3` initially (default: `3`) |
+| `DOWNLOAD_MAX_RETRIES` | optional | BullMQ attempts for a download job (default: `8`) |
+| `DOWNLOAD_INITIAL_BACKOFF_MS` | optional | Initial exponential download retry delay (default: `10000`) |
+| `DOWNLOAD_HEARTBEAT_MS` | optional | Refresh interval for an active download’s recovery timestamp (default: `60000`) |
 | `MAX_STAGING_SIZE_GB` | optional | Max staging disk usage in GB (default: `50`) |
 | `HIGH_WATERMARK_PCT` | optional | Pause uploads above this disk usage % (default: `80`) |
 | `CLEANUP_AFTER_HOURS` | optional | Delete local files after N hours post-upload (default: `2`) |
 | `RECONCILIATION_INTERVAL_MIN` | optional | How often to backfill missed messages (default: `10`) |
+| `RECONCILIATION_LEASE_TTL_MS` | optional | Redis ownership lease for a reconciliation run (default: `540000`) |
+| `RECONCILIATION_LEASE_RENEWAL_MS` | optional | Lease renewal cadence; must be below the lease TTL (default: `30000`) |
+| `RECONCILIATION_RUN_BUDGET_MS` | optional | Maximum reconciliation runtime; must be below the interval and lease TTL (default: `480000`) |
+| `RECONCILIATION_STALE_BUDGET_MS` | optional | Portion of a run reserved for stale-media recovery (default: `60000`) |
+| `RECONCILIATION_MAX_CHATS_PER_RUN` | optional | Fairly rotated cap on chats per run (default: `500`) |
+| `RECONCILIATION_MAX_PAGES_PER_CHAT` | optional | History pages per chat before deferral (default: `3`) |
+| `RECONCILIATION_HISTORY_PAGE_SIZE` | optional | Telegram history page size, capped at `100` (default: `100`) |
+| `RECONCILIATION_NORMAL_LOOKBACK_MESSAGES` | optional | Routine replay overlap (default: `50`) |
+| `RECONCILIATION_RECOVERY_LOOKBACK_MESSAGES` | optional | Replay overlap for overdue chats (default: `200`) |
+| `RECONCILIATION_CHAT_CONCURRENCY` | optional | Initial per-ingestor chat concurrency, capped at `3` (default: `3`) |
+| `RECONCILIATION_TELEGRAM_REQUESTS_PER_SEC` | optional | Shared Redis-backed Telegram request rate across ingestor and downloader (default: `5`) |
+| `TELEGRAM_REQUEST_SLOT_TTL_MS` | optional | Expiry for a renewable shared Telegram request permit (default: `120000`) |
+
+### Reconciliation and downloader operations
+
+Each reconciliation tick obtains a token-checked Redis lease before it performs stale recovery or history reads. It uses an eight-minute default budget inside the ten-minute schedule, pages history at 100 messages, and checkpoints a cursor only after the page was processed. Due chats are rotated fairly when there are more than the per-run cap; Telegram channel aliases are collapsed so one physical chat is not reconciled twice.
+
+The downloader and ingestor share Redis-backed Telegram request permits, a global request rate, and a FloodWait pause. Keep `RECONCILIATION_CHAT_CONCURRENCY` and `DOWNLOAD_CONCURRENCY` at `1` for an initial production rollout if telemetry is not yet established, then increase no higher than `3` after run duration, reconciliation lag, and FloodWait/error logs remain healthy.
+
+Useful structured log events are `reconciliation run started`, `reconciliation run completed`, `reconcile: history page failed; cursor was not advanced`, `media download starting`, `media download completed`, and `recovering stale media item`.
 
 ### Upload strategy options
 
@@ -282,7 +311,8 @@ All endpoints require `Authorization: Bearer <STATS_API_AUTH_TOKEN>` header.
 ```
 tele-autoupload/
 ├── apps/
-│   ├── ingestor/          # Telegram listener + inline downloader
+│   ├── ingestor/          # Telegram listener + reconciliation scheduler
+│   ├── worker-downloader/ # Telegram download, staging, hashing worker
 │   ├── worker-uploader/   # Google Drive upload worker
 │   └── stats-api/         # REST API + Telegram bot
 ├── packages/

@@ -31,6 +31,11 @@ module.exports = {
     },
     {
       ...appDefaults,
+      name: 'downloader',
+      script: 'apps/worker-downloader/src/main.ts',
+    },
+    {
+      ...appDefaults,
       name: 'uploader',
       script: 'apps/worker-uploader/src/main.ts',
     },

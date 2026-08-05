@@ -6,3 +6,7 @@ export interface UploadJobPayload {
   mediaType: 'photo' | 'video' | 'document';
   sizeBytes: string;
 }
+
+export interface DownloadJobPayload {
+  mediaItemId: string;
+}

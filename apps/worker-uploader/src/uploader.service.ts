@@ -1,6 +1,6 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { MediaStatus } from '@prisma/client';
+import { JobEventType, MediaStatus } from '@prisma/client';
 import { Job, Worker } from 'bullmq';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
@@ -11,6 +11,7 @@ import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { JobEventLogService } from '@shared/services/job-event-log.service';
 import { TelegramNotifierService } from '@shared/services/telegram-notifier.service';
+import { TelegramGateway } from '@shared/telegram/telegram-gateway';
 import { UploadJobPayload } from '@shared/types/jobs';
 import { logger } from '@shared/utils/logger';
 import { FolderResolverService } from './folder-resolver.service';
@@ -25,6 +26,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     failed: number;
     errors: Map<string, number>;
   }>();
+  private whitelistedSenderIds?: Promise<Set<string> | null>;
 
   constructor(
     private readonly queueService: QueueService,
@@ -33,6 +35,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     private readonly uploaderFactory: UploaderFactoryService,
     private readonly folderResolverService: FolderResolverService,
     private readonly telegramNotifier: TelegramNotifierService,
+    private readonly telegramGateway: TelegramGateway,
   ) {}
 
   onModuleInit(): void {
@@ -48,6 +51,9 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     if (this.worker) {
       await this.worker.close();
     }
+    if (this.whitelistedSenderIds) {
+      await this.telegramGateway.disconnect();
+    }
   }
 
   private async processJob(job: Job<UploadJobPayload>): Promise<void> {
@@ -56,20 +62,9 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (item.status === MediaStatus.uploaded && item.driveFileId) {
+    if (item.status === MediaStatus.skipped || (item.status === MediaStatus.uploaded && item.driveFileId)) {
       return;
     }
-
-    await this.prisma.mediaItem.update({
-      where: { id: item.id },
-      data: { status: MediaStatus.uploading, updatedAt: new Date() },
-    });
-
-    await this.eventLogService.log(item.id, 'upload_start', { attempt: job.attemptsMade + 1 });
-
-    const strategy = this.uploaderFactory.getStrategy();
-    const group = await this.prisma.groupState.findUnique({ where: { chatId: item.chatId } });
-    const chatTitle = group?.title ?? item.chatId.toString();
     const userTu = item.senderId
       ? await this.prisma.userTu.findFirst({
           where: {
@@ -83,6 +78,10 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     let resolvedUserPath = userTu?.path ?? null;
     if (appConfig.uploadStrategy === 'drive_desktop') {
       if (!userTu) {
+        if (item.senderId && await this.isWhitelistedSender(item.senderId)) {
+          await this.skipWhitelistedAdminMedia(item.id, item.senderId);
+          return;
+        }
         throw new Error(`Missing user_tu row for media item ${item.id}`);
       }
       resolvedUserPath = await this.resolveDesktopUserPath(userTu);
@@ -90,6 +89,17 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
         throw new Error(`Missing user_tu.path for media item ${item.id}`);
       }
     }
+
+    await this.prisma.mediaItem.update({
+      where: { id: item.id },
+      data: { status: MediaStatus.uploading, updatedAt: new Date() },
+    });
+
+    await this.eventLogService.log(item.id, JobEventType.upload_start, { attempt: job.attemptsMade + 1 });
+
+    const strategy = this.uploaderFactory.getStrategy();
+    const group = await this.prisma.groupState.findUnique({ where: { chatId: item.chatId } });
+    const chatTitle = group?.title ?? item.chatId.toString();
 
     const destination = await strategy.ensureDestination({
       chatId: item.chatId,
@@ -135,7 +145,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    await this.eventLogService.log(item.id, 'upload_done', {
+    await this.eventLogService.log(item.id, JobEventType.upload_done, {
       remoteRef: result.remoteRef,
       bytesUploaded: result.bytesUploaded.toString(),
     });
@@ -177,7 +187,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
 
     const items = await this.prisma.mediaItem.findMany({
       where: {
-        status: MediaStatus.uploaded,
+        status: { in: [MediaStatus.uploaded, MediaStatus.skipped] },
         localPath: { not: null },
         updatedAt: { lt: threshold },
       },
@@ -209,7 +219,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    await this.eventLogService.log(mediaItemId, 'failed', { error: error.message });
+    await this.eventLogService.log(mediaItemId, JobEventType.failed, { error: error.message });
 
     const failedUser = failedItem.senderId
       ? await this.prisma.userTu.findFirst({
@@ -293,6 +303,60 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     const normalizedError = input.error.replace(/\s+/g, ' ').slice(0, 120);
     bucket.errors.set(normalizedError, (bucket.errors.get(normalizedError) ?? 0) + 1);
     this.pendingNotifications.set(key, bucket);
+  }
+
+  private async isWhitelistedSender(senderId: bigint): Promise<boolean> {
+    if (appConfig.unregisteredUploaderUsernameWhitelist.length === 0) {
+      return false;
+    }
+
+    const senderIds = await this.resolveWhitelistedSenderIds();
+    return senderIds?.has(senderId.toString()) ?? false;
+  }
+
+  private async resolveWhitelistedSenderIds(): Promise<Set<string> | null> {
+    return this.whitelistedSenderIds ??= this.loadWhitelistedSenderIds();
+  }
+
+  private async loadWhitelistedSenderIds(): Promise<Set<string> | null> {
+    try {
+      await this.telegramGateway.connect({ withUpdates: false });
+      const resolvedUsers = await Promise.all(
+        appConfig.unregisteredUploaderUsernameWhitelist.map((username) =>
+          this.telegramGateway.resolvePublicUserOrBotUsername(username),
+        ),
+      );
+      return new Set(resolvedUsers.map((user) => user.telegramUserId.toString()));
+    } catch (err) {
+      logger.warn({ err }, 'could not resolve unregistered uploader whitelist usernames');
+      return null;
+    }
+  }
+
+  private async skipWhitelistedAdminMedia(mediaItemId: string, senderId: bigint): Promise<void> {
+    await this.prisma.mediaItem.update({
+      where: { id: mediaItemId },
+      data: {
+        status: MediaStatus.skipped,
+        error: null,
+        failedAt: null,
+        retryCount: 0,
+        lastRetryAt: null,
+        updatedAt: new Date(),
+      },
+    });
+    try {
+      await this.eventLogService.log(mediaItemId, JobEventType.skipped, {
+        reason: 'whitelisted_admin_sender',
+        senderId: senderId.toString(),
+      });
+    } catch (err) {
+      logger.error({ err, mediaItemId }, 'failed to record whitelisted admin skip');
+    }
+    logger.info(
+      { mediaItemId, senderId: senderId.toString() },
+      'queued media from whitelisted admin skipped',
+    );
   }
 
   private async resolveDesktopUserPath(userTu: {

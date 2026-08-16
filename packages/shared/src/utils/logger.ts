@@ -35,17 +35,6 @@ const baseLogger = winston.createLogger({
     }),
     new DailyRotateFile({
       dirname: logDir,
-      filename: 'app-%DATE%.log',
-      datePattern: 'YYYY-MM-DD',
-      maxFiles: `${appConfig.logRetentionDays}d`,
-      level: appConfig.logLevel,
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.json(),
-      ),
-    }),
-    new DailyRotateFile({
-      dirname: logDir,
       filename: 'error-%DATE%.log',
       datePattern: 'YYYY-MM-DD',
       maxFiles: `${appConfig.logRetentionDays}d`,

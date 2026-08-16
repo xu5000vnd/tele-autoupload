@@ -70,6 +70,21 @@ describe('TelegramGateway username resolution', () => {
     );
   });
 
+  it('resolves bots for internal identity checks', async () => {
+    const invoke = vi.fn().mockResolvedValue(new Api.contacts.ResolvedPeer({
+      peer: new Api.PeerUser({ userId: bigInt(42) }),
+      chats: [],
+      users: [new Api.User({ id: bigInt(42), bot: true })],
+    }));
+    const gateway = new TelegramGateway(undefined as never);
+    (gateway as any).client = { connected: true, invoke };
+
+    await expect(gateway.resolvePublicUserOrBotUsername('a_bot')).resolves.toEqual({
+      telegramUserId: 42n,
+      isBot: true,
+    });
+  });
+
   it('does not invoke Telegram when the shared client is disconnected', async () => {
     const invoke = vi.fn();
     const gateway = new TelegramGateway(undefined as never);

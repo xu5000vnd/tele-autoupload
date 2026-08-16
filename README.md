@@ -209,7 +209,7 @@ services before starting the web admin.
 | `UPLOAD_DATE_BUCKET_DAYS` | optional | Date bucket size for desktop folder grouping (default: `10`) |
 | `BOT_TOKEN` | optional | Telegram bot token from `@BotFather` |
 | `BOT_REPORT_CHAT_ID` | optional | Chat ID to receive automatic daily summary at 09:00 UTC |
-| `UNREGISTERED_UPLOADER_USERNAME_WHITELIST` | optional | Comma/semicolon/newline-separated usernames to skip "Unregistered uploader" notifications (supports values with or without `@`) |
+| `UNREGISTERED_UPLOADER_USERNAME_WHITELIST` | optional | Comma/semicolon/newline-separated usernames to skip "Unregistered uploader" notifications (supports values with or without `@`). Queued media from a configured username is skipped after Telegram confirms its sender ID. |
 | `STATS_API_PORT` | optional | Stats API port (default: `3100`) |
 | `STATS_API_AUTH_TOKEN` | optional | Bearer token for the stats API |
 | `UPLOAD_CONCURRENCY` | optional | Parallel upload jobs (default: `6`) |

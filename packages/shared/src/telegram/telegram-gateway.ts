@@ -350,6 +350,15 @@ export class TelegramGateway {
   }
 
   async resolvePublicUserUsername(username: string): Promise<ResolvedTelegramUser> {
+    const resolvedUser = await this.resolvePublicUserOrBotUsername(username);
+    if (resolvedUser.isBot) {
+      throw new TelegramUsernameNotUserError();
+    }
+
+    return { telegramUserId: resolvedUser.telegramUserId };
+  }
+
+  async resolvePublicUserOrBotUsername(username: string): Promise<ResolvedTelegramUser & { isBot: boolean }> {
     if (!this.client?.connected) {
       throw new TelegramUsernameLookupUnavailableError();
     }
@@ -371,11 +380,11 @@ export class TelegramGateway {
     if (!user) {
       throw new TelegramUsernameLookupUnavailableError();
     }
-    if (user.bot) {
-      throw new TelegramUsernameNotUserError();
-    }
 
-    return { telegramUserId: BigInt(user.id.toString()) };
+    return {
+      telegramUserId: BigInt(user.id.toString()),
+      isBot: Boolean(user.bot),
+    };
   }
 
   onNewMessage(handler: MessageHandler): void {

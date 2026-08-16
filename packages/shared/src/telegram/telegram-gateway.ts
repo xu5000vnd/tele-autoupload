@@ -165,6 +165,24 @@ export type TelegramHistoryPage = {
   hasMore: boolean;
 };
 
+export type ResolvedTelegramUser = {
+  telegramUserId: bigint;
+};
+
+export class TelegramUsernameNotUserError extends Error {
+  constructor() {
+    super('Telegram username does not belong to a user');
+    this.name = 'TelegramUsernameNotUserError';
+  }
+}
+
+export class TelegramUsernameLookupUnavailableError extends Error {
+  constructor() {
+    super('Telegram username lookup is unavailable');
+    this.name = 'TelegramUsernameLookupUnavailableError';
+  }
+}
+
 function biToNative(v: BigInteger): bigint {
   return BigInt(v.toString());
 }
@@ -329,6 +347,35 @@ export class TelegramGateway {
         forceDocument: false,
       });
     });
+  }
+
+  async resolvePublicUserUsername(username: string): Promise<ResolvedTelegramUser> {
+    if (!this.client?.connected) {
+      throw new TelegramUsernameLookupUnavailableError();
+    }
+
+    const result = await this.runTelegramRequest(
+      undefined,
+      () => this.client.invoke(new Api.contacts.ResolveUsername({ username })),
+    );
+
+    if (!(result.peer instanceof Api.PeerUser)) {
+      throw new TelegramUsernameNotUserError();
+    }
+
+    const peerUserId = result.peer.userId.toString();
+    const user = result.users.find(
+      (candidate): candidate is Api.User =>
+        candidate instanceof Api.User && candidate.id.toString() === peerUserId,
+    );
+    if (!user) {
+      throw new TelegramUsernameLookupUnavailableError();
+    }
+    if (user.bot) {
+      throw new TelegramUsernameNotUserError();
+    }
+
+    return { telegramUserId: BigInt(user.id.toString()) };
   }
 
   onNewMessage(handler: MessageHandler): void {

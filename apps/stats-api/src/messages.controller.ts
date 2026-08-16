@@ -28,6 +28,11 @@ export class MessagesController {
     return this.messagesService.listTargets(query, parseTargetStatus(status));
   }
 
+  @Post('targets/resolve-username')
+  async resolveTargetUsername(@Body() body: TargetBody): Promise<Record<string, string>> {
+    return this.messagesService.resolveTargetUsername(readRequiredTelegramUsername(body));
+  }
+
   @Post('targets')
   async createTarget(@Body() body: TargetBody): Promise<Record<string, unknown>> {
     return this.messagesService.createTarget(parseTargetBody(body, true));
@@ -131,6 +136,25 @@ function normalizeTelegramUsername(username: string | null): string | null {
   }
 
   return username.trim().replace(/^@+/, '').toLowerCase() || null;
+}
+
+function readRequiredTelegramUsername(body: TargetBody): string {
+  if (!body || typeof body !== 'object') {
+    throw new BadRequestException('telegram_username is required');
+  }
+  const value = body.telegram_username;
+  if (value === undefined) {
+    throw new BadRequestException('telegram_username is required');
+  }
+  if (typeof value !== 'string') {
+    throw new BadRequestException('telegram_username must be a string');
+  }
+
+  const normalized = normalizeTelegramUsername(value);
+  if (!normalized) {
+    throw new BadRequestException('telegram_username is required');
+  }
+  return normalized;
 }
 
 function readString(body: TargetBody, key: string, required: boolean): string | undefined {

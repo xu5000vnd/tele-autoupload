@@ -129,7 +129,17 @@
 
             <label>
               <span>Telegram Username</span>
-              <input v-model="form.telegram_username" type="text" placeholder="@username" />
+              <div class="username-resolver">
+                <input v-model="form.telegram_username" :disabled="resolvingUsername" type="text" placeholder="@username" />
+                <button
+                  class="btn-secondary"
+                  :disabled="saving || resolvingUsername || !normalizedUsername"
+                  type="button"
+                  @click="resolveUsername"
+                >
+                  {{ resolvingUsername ? 'Resolving...' : 'Resolve' }}
+                </button>
+              </div>
             </label>
 
             <label>
@@ -146,8 +156,8 @@
             </label>
 
             <div class="modal-actions">
-              <button class="btn-secondary" type="button" @click="closeForm">Cancel</button>
-              <button :disabled="saving" type="submit">
+              <button class="btn-secondary" :disabled="resolvingUsername" type="button" @click="closeForm">Cancel</button>
+              <button :disabled="saving || resolvingUsername" type="submit">
                 {{ saving ? 'Saving...' : editingId ? 'Update User' : 'Add User' }}
               </button>
             </div>
@@ -159,11 +169,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import {
   addTarget,
   listTargets,
+  resolveTelegramUsername,
   updateTarget,
   type SaveTargetRequest,
   type Target,
@@ -175,6 +186,7 @@ const users = ref<Target[]>([]);
 const filteredUsers = ref<Target[]>([]);
 const loading = ref(false);
 const saving = ref(false);
+const resolvingUsername = ref(false);
 const search = ref('');
 const statusFilter = ref<StatusFilter>('all');
 const editingId = ref<number | null>(null);
@@ -191,6 +203,8 @@ const form = reactive({
   path: '',
   status: 'active' as 'active' | 'inactive',
 });
+
+const normalizedUsername = computed(() => form.telegram_username.trim().replace(/^@+/, '').toLowerCase());
 
 function applyLocalFilter(): void {
   const q = search.value.trim().toLowerCase();
@@ -253,7 +267,33 @@ function editUser(user: Target): void {
 }
 
 function closeForm(): void {
+  if (resolvingUsername.value) {
+    return;
+  }
   formOpen.value = false;
+}
+
+async function resolveUsername(): Promise<void> {
+  if (saving.value || resolvingUsername.value || !normalizedUsername.value) {
+    return;
+  }
+
+  resolvingUsername.value = true;
+  errorMsg.value = '';
+  successMsg.value = '';
+
+  try {
+    const resolved = await resolveTelegramUsername({
+      telegram_username: form.telegram_username,
+    });
+    form.telegram_username = resolved.telegram_username;
+    form.telegram_user_id = resolved.telegram_user_id;
+    successMsg.value = `Resolved @${resolved.telegram_username}.`;
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    resolvingUsername.value = false;
+  }
 }
 
 function buildPayload(): SaveTargetRequest {
@@ -472,6 +512,15 @@ tr.selected {
   gap: 10px;
 }
 
+.username-resolver {
+  display: flex;
+  gap: 10px;
+}
+
+.username-resolver input {
+  min-width: 0;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -630,6 +679,14 @@ button:disabled {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .username-resolver {
+    flex-direction: column;
+  }
+
+  .username-resolver button {
+    width: 100%;
   }
 
   .modal-actions {

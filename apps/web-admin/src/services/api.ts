@@ -82,11 +82,31 @@ function buildHeaders(): HeadersInit {
   return headers;
 }
 
+function responseErrorMessage(text: string, status: number): string {
+  if (!text) {
+    return `HTTP ${status}`;
+  }
+
+  try {
+    const body = JSON.parse(text) as { message?: unknown };
+    if (typeof body.message === 'string') {
+      return body.message;
+    }
+    if (Array.isArray(body.message) && body.message.every((item) => typeof item === 'string')) {
+      return body.message.join(', ');
+    }
+  } catch {
+    // Non-JSON error responses are already suitable for display.
+  }
+
+  return text;
+}
+
 export async function apiGet<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: buildHeaders() });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(text || `HTTP ${res.status}`);
+    throw new Error(responseErrorMessage(text, res.status));
   }
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
@@ -99,7 +119,7 @@ export async function apiPost<T>(url: string, payload: unknown): Promise<T> {
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(text || `HTTP ${res.status}`);
+    throw new Error(responseErrorMessage(text, res.status));
   }
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
@@ -112,7 +132,7 @@ export async function apiPut<T>(url: string, payload: unknown): Promise<T> {
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(text || `HTTP ${res.status}`);
+    throw new Error(responseErrorMessage(text, res.status));
   }
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
@@ -162,6 +182,15 @@ export type SaveTargetRequest = {
   status?: 'active' | 'inactive';
 };
 
+export type ResolveTelegramUsernameRequest = {
+  telegram_username: string;
+};
+
+export type ResolveTelegramUsernameResponse = {
+  telegram_username: string;
+  telegram_user_id: string;
+};
+
 export function listTargets(query = '', status: 'active' | 'inactive' | 'all' = 'active'): Promise<Target[]> {
   const params = new URLSearchParams();
   if (query.trim()) {
@@ -181,6 +210,12 @@ export function addTarget(payload: SaveTargetRequest): Promise<Target> {
 
 export function updateTarget(id: number, payload: SaveTargetRequest): Promise<Target> {
   return apiPut<Target>(`/api/messages/targets/${id}`, payload);
+}
+
+export function resolveTelegramUsername(
+  payload: ResolveTelegramUsernameRequest,
+): Promise<ResolveTelegramUsernameResponse> {
+  return apiPost<ResolveTelegramUsernameResponse>('/api/messages/targets/resolve-username', payload);
 }
 
 export type MediaBackfillRequest = {

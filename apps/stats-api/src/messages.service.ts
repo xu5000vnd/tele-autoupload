@@ -1,8 +1,24 @@
-import { BadRequestException, ConflictException, Injectable, OnModuleDestroy, OnModuleInit, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  OnModuleDestroy,
+  OnModuleInit,
+  NotFoundException,
+  ServiceUnavailableException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { UserTuStatus } from '@prisma/client';
 import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
-import { TelegramGateway } from '@shared/telegram/telegram-gateway';
+import {
+  TelegramGateway,
+  TelegramUsernameLookupUnavailableError,
+  TelegramUsernameNotUserError,
+  telegramFloodWaitSeconds,
+} from '@shared/telegram/telegram-gateway';
 import { logger } from '@shared/utils/logger';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
@@ -29,6 +45,31 @@ interface SaveTargetInput {
   telegramChatId?: bigint;
   username?: string | null;
   status?: UserTuStatus;
+}
+
+type TelegramRpcErrorInfo = {
+  code?: number;
+  message?: string;
+};
+
+function normalizeTelegramUsername(username: string): string {
+  return username.trim().replace(/^@+/, '').toLowerCase();
+}
+
+function telegramRpcErrorInfo(err: unknown): TelegramRpcErrorInfo {
+  if (!err || typeof err !== 'object') {
+    return {};
+  }
+
+  const raw = err as Record<string, unknown>;
+  return {
+    code: typeof raw.code === 'number' ? raw.code : undefined,
+    message: typeof raw.errorMessage === 'string'
+      ? raw.errorMessage
+      : typeof raw.message === 'string'
+        ? raw.message
+        : undefined,
+  };
 }
 
 @Injectable()
@@ -218,6 +259,51 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         throw new NotFoundException('target not found');
       }
       throw err;
+    }
+  }
+
+  async resolveTargetUsername(telegramUsername: string): Promise<Record<string, string>> {
+    const normalizedUsername = normalizeTelegramUsername(telegramUsername);
+    if (!normalizedUsername) {
+      throw new BadRequestException('telegram_username is required');
+    }
+
+    try {
+      const { telegramUserId } = await this.telegramGateway.resolvePublicUserUsername(normalizedUsername);
+      return {
+        telegram_username: normalizedUsername,
+        telegram_user_id: telegramUserId.toString(),
+      };
+    } catch (err) {
+      if (err instanceof TelegramUsernameNotUserError) {
+        throw new UnprocessableEntityException('Telegram username does not belong to a user');
+      }
+      if (telegramFloodWaitSeconds(err) !== undefined) {
+        throw new HttpException('Telegram is rate limited; try again later', HttpStatus.TOO_MANY_REQUESTS);
+      }
+
+      const rpcError = telegramRpcErrorInfo(err);
+      if (rpcError.message?.includes('USERNAME_INVALID')) {
+        throw new BadRequestException('Telegram username is invalid');
+      }
+      if (rpcError.message?.includes('USERNAME_NOT_OCCUPIED')) {
+        throw new NotFoundException('Telegram username was not found');
+      }
+      if (err instanceof TelegramUsernameLookupUnavailableError) {
+        throw new ServiceUnavailableException('Telegram username lookup is currently unavailable');
+      }
+
+      logger.error(
+        {
+          err,
+          operation: 'resolveTargetUsername',
+          telegramUsername: normalizedUsername,
+          rpcCode: rpcError.code,
+          rpcMessage: rpcError.message,
+        },
+        'telegram username lookup failed',
+      );
+      throw new ServiceUnavailableException('Telegram username lookup is currently unavailable');
     }
   }
 

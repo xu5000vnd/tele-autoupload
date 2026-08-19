@@ -15,7 +15,11 @@ describe('DownloaderService', () => {
       on: vi.fn(),
       close: vi.fn().mockResolvedValue(undefined),
     };
-    let processor: ((job: { data: { mediaItemId: string } }) => Promise<void>) | undefined;
+    let processor: ((job: {
+      data: { mediaItemId: string };
+      attemptsMade: number;
+      opts: { attempts?: number };
+    }) => Promise<void>) | undefined;
     const queueService = {
       createDownloadWorker: vi.fn((callback) => {
         processor = callback;
@@ -43,9 +47,16 @@ describe('DownloaderService', () => {
     expect(queueService.createDownloadWorker).toHaveBeenCalledOnce();
     expect(worker.on).toHaveBeenCalledWith('failed', expect.any(Function));
 
-    await processor?.({ data: { mediaItemId: 'media-1' } });
+    await processor?.({
+      data: { mediaItemId: 'media-1' },
+      attemptsMade: 2,
+      opts: { attempts: 3 },
+    });
 
-    expect(mediaService.downloadMediaItem).toHaveBeenCalledWith('media-1', context);
+    expect(mediaService.downloadMediaItem).toHaveBeenCalledWith('media-1', context, {
+      attemptsMade: 2,
+      maxAttempts: 3,
+    });
 
     await service.onModuleDestroy();
 

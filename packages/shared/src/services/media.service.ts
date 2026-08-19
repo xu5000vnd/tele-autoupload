@@ -7,7 +7,7 @@ import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { JobEventLogService } from '@shared/services/job-event-log.service';
-import { TelegramGateway, TelegramReconciliationContext } from '@shared/telegram/telegram-gateway';
+import { TelegramGateway, TelegramMediaDownloadError, TelegramReconciliationContext } from '@shared/telegram/telegram-gateway';
 import { IncomingMedia, IncomingMessage } from '@shared/types/telegram';
 import { makeDeterministicFileName } from '@shared/utils/file-naming';
 import { hashFileSha256 } from '@shared/utils/hash';
@@ -28,6 +28,11 @@ export type StaleRecoveryOptions = {
   deadlineAt?: number;
   maxItems?: number;
   shouldContinue?: () => boolean;
+};
+
+export type DownloadAttemptMetadata = {
+  attemptsMade: number;
+  maxAttempts: number;
 };
 
 @Injectable()
@@ -113,6 +118,21 @@ export class MediaService {
           priority: mediaType === 'photo' ? 0 : 5,
         },
       });
+
+      if (mediaItem.status === MediaStatus.deleted) {
+        logger.info(
+          this.buildLogContext({
+            message,
+            media,
+            uploader,
+            mediaItemId: mediaItem.id,
+            tgFileUniqueId: uniqueField,
+            mediaStatus: mediaItem.status,
+          }),
+          'deleted media item skipped by idempotency guard',
+        );
+        continue;
+      }
 
       await this.eventLogService.log(mediaItem.id, 'queued', {
         chatId: message.chatId.toString(),
@@ -315,9 +335,13 @@ export class MediaService {
     return true;
   }
 
-  async downloadMediaItem(mediaItemId: string, context?: TelegramReconciliationContext): Promise<void> {
+  async downloadMediaItem(
+    mediaItemId: string,
+    context?: TelegramReconciliationContext,
+    attempt?: DownloadAttemptMetadata,
+  ): Promise<void> {
     const mediaItem = await this.prisma.mediaItem.findUnique({ where: { id: mediaItemId } });
-    if (!mediaItem || mediaItem.status === MediaStatus.uploaded) {
+    if (!mediaItem || mediaItem.status === MediaStatus.uploaded || mediaItem.status === MediaStatus.deleted) {
       return;
     }
 
@@ -335,7 +359,7 @@ export class MediaService {
     if (mediaItem.status === MediaStatus.downloading || mediaItem.status === MediaStatus.uploading) {
       return;
     }
-    await this.downloadAndQueueMedia(message, media, mediaItem, uploader, context);
+    await this.downloadAndQueueMedia(message, media, mediaItem, uploader, context, attempt);
   }
 
   private async downloadAndQueueMedia(
@@ -344,6 +368,7 @@ export class MediaService {
     mediaItem: MediaItem,
     uploader?: ResolvedUploaderContext,
     context?: TelegramReconciliationContext,
+    attempt?: DownloadAttemptMetadata,
   ): Promise<void> {
     const fileName = makeDeterministicFileName({
       date: mediaItem.date,
@@ -378,6 +403,7 @@ export class MediaService {
     }
 
     let downloadPersisted = false;
+    let telegramDownloadFailed = false;
     let completedAt: Date | undefined;
     const heartbeat = setInterval(() => {
       void this.refreshDownloadHeartbeat(mediaItem.id, downloadLeaseToken);
@@ -399,12 +425,18 @@ export class MediaService {
         'media download starting',
       );
 
-      const { sizeBytes } = await this.telegramGateway.downloadMediaToFile({
-        chatId: message.chatId,
-        messageId: Number(message.messageId),
-        mediaIndex: media.mediaIndex,
-        destinationPath: localPath,
-      }, context);
+      let sizeBytes: bigint;
+      try {
+        ({ sizeBytes } = await this.telegramGateway.downloadMediaToFile({
+          chatId: message.chatId,
+          messageId: Number(message.messageId),
+          mediaIndex: media.mediaIndex,
+          destinationPath: localPath,
+        }, context));
+      } catch (err) {
+        telegramDownloadFailed = err instanceof TelegramMediaDownloadError;
+        throw err;
+      }
 
       const sha256 = await hashFileSha256(localPath);
 
@@ -470,6 +502,7 @@ export class MediaService {
       );
     } catch (err) {
       const errorMessage = (err as Error).message;
+      const terminalDownloadFailure = telegramDownloadFailed && this.isFinalDownloadAttempt(attempt);
       logger.error(
         {
           err,
@@ -479,7 +512,11 @@ export class MediaService {
             uploader,
             mediaItemId: mediaItem.id,
             tgFileUniqueId: mediaItem.tgFileUniqueId ?? `idx:${mediaItem.mediaIndex}`,
-            mediaStatus: downloadPersisted ? MediaStatus.downloaded : MediaStatus.failed,
+            mediaStatus: downloadPersisted
+              ? MediaStatus.downloaded
+              : terminalDownloadFailure
+                ? MediaStatus.deleted
+                : MediaStatus.failed,
             localPath,
           }),
         },
@@ -491,7 +528,15 @@ export class MediaService {
         downloadPersisted,
         downloadLeaseToken,
         completedAt,
+        terminalDownloadFailure,
       );
+      if (terminalDownloadFailure) {
+        try {
+          await fs.rm(localPath, { force: true });
+        } catch (cleanupError) {
+          logger.warn({ err: cleanupError, mediaItemId: mediaItem.id, localPath }, 'failed to remove incomplete terminal download');
+        }
+      }
       throw err;
     } finally {
       clearInterval(heartbeat);
@@ -519,6 +564,7 @@ export class MediaService {
     downloadPersisted: boolean,
     downloadLeaseToken: string,
     completedAt?: Date,
+    terminalDownloadFailure = false,
   ): Promise<void> {
     const now = new Date();
     try {
@@ -541,7 +587,11 @@ export class MediaService {
         data: {
           // Once the staged file is durable, downstream queue/log failures must
           // not discard it or force another Telegram download.
-          status: downloadPersisted ? MediaStatus.downloaded : MediaStatus.failed,
+          status: downloadPersisted
+            ? MediaStatus.downloaded
+            : terminalDownloadFailure
+              ? MediaStatus.deleted
+              : MediaStatus.failed,
           downloadLeaseToken: null,
           error: errorMessage,
           failedAt: downloadPersisted ? null : now,
@@ -707,6 +757,10 @@ export class MediaService {
       status === MediaStatus.downloaded ||
       status === MediaStatus.uploading ||
       status === MediaStatus.failed;
+  }
+
+  private isFinalDownloadAttempt(attempt?: DownloadAttemptMetadata): boolean {
+    return !!attempt && attempt.attemptsMade + 1 >= attempt.maxAttempts;
   }
 
   private canResumeUpload(item: MediaItem, fileExists: boolean): boolean {

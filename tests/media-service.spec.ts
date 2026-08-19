@@ -3,7 +3,9 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { MediaStatus } from '@prisma/client';
+import { appConfig } from '@shared/config/env';
 import { MediaService } from '@shared/services/media.service';
+import { TelegramMediaDownloadError } from '@shared/telegram/telegram-gateway';
 import { IncomingMessage } from '@shared/types/telegram';
 
 describe('MediaService', () => {
@@ -334,6 +336,269 @@ describe('MediaService', () => {
         await fs.rm(destinationPath, { force: true });
       }
     }
+  });
+
+  it.each([
+    {
+      name: 'keeps a non-final Telegram download failure retryable',
+      attemptsMade: 1,
+      maxAttempts: 3,
+      expectedStatus: MediaStatus.failed,
+      error: new TelegramMediaDownloadError('Telegram media unavailable', new Error('media unavailable')),
+      writePartialMedia: true,
+    },
+    {
+      name: 'marks a final Telegram download failure as deleted',
+      attemptsMade: 2,
+      maxAttempts: 3,
+      expectedStatus: MediaStatus.deleted,
+      error: new TelegramMediaDownloadError('Telegram media unavailable', new Error('media unavailable')),
+      writePartialMedia: true,
+    },
+    {
+      name: 'keeps a final local staging failure retryable',
+      attemptsMade: 2,
+      maxAttempts: 3,
+      expectedStatus: MediaStatus.failed,
+      error: new Error('Staging disk full'),
+      writePartialMedia: false,
+    },
+  ])('$name', async ({ attemptsMade, maxAttempts, expectedStatus, error, writePartialMedia }) => {
+    const stagingDir = await fs.mkdtemp(path.join(tmpdir(), 'tele-autoupload-download-failure-'));
+    const originalStagingDir = appConfig.stagingDir;
+    appConfig.stagingDir = stagingDir;
+    const item = makeMediaItem({
+      localPath: null,
+      sizeBytes: null,
+      status: MediaStatus.queued,
+    });
+    const prisma = {
+      mediaItem: {
+        findUnique: vi.fn().mockResolvedValue(item),
+        updateMany: vi.fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 1 }),
+      },
+      groupState: {
+        findUnique: vi.fn().mockResolvedValue({
+          title: 'Monthly Media',
+          chatType: 'supergroup',
+          isActive: true,
+        }),
+      },
+      userTu: { findFirst: vi.fn() },
+    };
+    let destinationPath = '';
+    const telegramGateway = {
+      downloadMediaToFile: vi.fn().mockImplementation(async ({ destinationPath: targetPath }) => {
+        destinationPath = targetPath;
+        if (writePartialMedia) {
+          await fs.writeFile(destinationPath, 'partial-media');
+        }
+        throw error;
+      }),
+    };
+    const service = new MediaService(
+      prisma as never,
+      { enqueueDownload: vi.fn(), enqueueUpload: vi.fn() } as never,
+      { log: vi.fn().mockResolvedValue(undefined) } as never,
+      telegramGateway as never,
+    );
+
+    try {
+      await expect(service.downloadMediaItem(item.id, undefined, {
+        attemptsMade,
+        maxAttempts,
+      })).rejects.toThrow(error.message);
+
+      expect(prisma.mediaItem.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        where: expect.objectContaining({
+          id: item.id,
+          status: MediaStatus.downloading,
+          downloadLeaseToken: expect.any(String),
+        }),
+        data: expect.objectContaining({
+          status: expectedStatus,
+          downloadLeaseToken: null,
+          error: error.message,
+          failedAt: expect.any(Date),
+        }),
+      }));
+      if (expectedStatus === MediaStatus.deleted) {
+        await expect(fs.access(destinationPath)).rejects.toThrow();
+      }
+    } finally {
+      appConfig.stagingDir = originalStagingDir;
+      await fs.rm(stagingDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps downloaded media after upload handoff fails on a final download attempt', async () => {
+    const stagingDir = await fs.mkdtemp(path.join(tmpdir(), 'tele-autoupload-handoff-'));
+    const originalStagingDir = appConfig.stagingDir;
+    appConfig.stagingDir = stagingDir;
+    const item = makeMediaItem({
+      localPath: null,
+      sizeBytes: null,
+      status: MediaStatus.queued,
+    });
+    const prisma = {
+      mediaItem: {
+        findUnique: vi.fn().mockResolvedValue(item),
+        updateMany: vi.fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 1 }),
+      },
+      groupState: {
+        findUnique: vi.fn().mockResolvedValue({
+          title: 'Monthly Media',
+          chatType: 'supergroup',
+          isActive: true,
+        }),
+      },
+      userTu: { findFirst: vi.fn() },
+    };
+    const queueService = {
+      enqueueDownload: vi.fn(),
+      enqueueUpload: vi.fn().mockRejectedValue(new Error('upload queue unavailable')),
+    };
+    const telegramGateway = {
+      downloadMediaToFile: vi.fn().mockImplementation(async ({ destinationPath }) => {
+        await fs.writeFile(destinationPath, 'downloaded-media');
+        return { sizeBytes: 16n };
+      }),
+    };
+    const service = new MediaService(
+      prisma as never,
+      queueService as never,
+      { log: vi.fn().mockResolvedValue(undefined) } as never,
+      telegramGateway as never,
+    );
+
+    try {
+      await expect(service.downloadMediaItem(item.id, undefined, {
+        attemptsMade: 2,
+        maxAttempts: 3,
+      })).rejects.toThrow('upload queue unavailable');
+
+      expect(prisma.mediaItem.updateMany).toHaveBeenNthCalledWith(3, expect.objectContaining({
+        where: expect.objectContaining({ id: item.id, status: MediaStatus.downloaded }),
+        data: expect.objectContaining({
+          status: MediaStatus.downloaded,
+          downloadLeaseToken: null,
+          error: 'upload queue unavailable',
+          failedAt: null,
+        }),
+      }));
+    } finally {
+      appConfig.stagingDir = originalStagingDir;
+      await fs.rm(stagingDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not requeue a deleted media item during message replay', async () => {
+    const prisma = {
+      groupState: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({ isActive: true }),
+      },
+      mediaItem: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({
+          id: 'media-deleted',
+          status: MediaStatus.deleted,
+          localPath: null,
+          sizeBytes: null,
+        }),
+      },
+    };
+    const queueService = {
+      enqueueDownload: vi.fn(),
+      enqueueUpload: vi.fn(),
+    };
+    const eventLogService = { log: vi.fn().mockResolvedValue(undefined) };
+    const service = new MediaService(
+      prisma as never,
+      queueService as never,
+      eventLogService as never,
+      { downloadMediaToFile: vi.fn() } as never,
+    );
+
+    await service.processIncomingMessage({
+      chatId: -1003839814010n,
+      chatTitle: 'Monthly Media',
+      chatType: 'supergroup',
+      messageId: 20n,
+      senderId: 1935597038n,
+      date: new Date('2026-07-05T17:43:39.715Z'),
+      media: [{
+        type: 'photo',
+        fileId: 'deleted-photo',
+        uniqueId: 'deleted-photo',
+        mimeType: 'image/jpeg',
+        mediaIndex: 0,
+      }],
+    });
+
+    expect(queueService.enqueueDownload).not.toHaveBeenCalled();
+    expect(queueService.enqueueUpload).not.toHaveBeenCalled();
+    expect(eventLogService.log).not.toHaveBeenCalled();
+  });
+
+  it('does not recover deleted media items', async () => {
+    const item = makeMediaItem({
+      localPath: null,
+      sizeBytes: null,
+      status: MediaStatus.deleted,
+    });
+    const prisma = {
+      mediaItem: {
+        findMany: vi.fn().mockResolvedValue([item]),
+        findUnique: vi.fn().mockResolvedValue(item),
+        updateMany: vi.fn(),
+      },
+    };
+    const queueService = { enqueueDownload: vi.fn(), enqueueUpload: vi.fn() };
+    const service = new MediaService(
+      prisma as never,
+      queueService as never,
+      { log: vi.fn() } as never,
+      {} as never,
+    );
+
+    const recovered = await service.recoverStaleMediaItems({ olderThanMs: 60_000 });
+
+    expect(recovered).toBe(0);
+    expect(prisma.mediaItem.findMany.mock.calls[0][0].where.status.in).not.toContain(MediaStatus.deleted);
+    expect(prisma.mediaItem.updateMany).not.toHaveBeenCalled();
+    expect(queueService.enqueueDownload).not.toHaveBeenCalled();
+  });
+
+  it('does not download a deleted item that was already queued', async () => {
+    const item = makeMediaItem({
+      localPath: null,
+      sizeBytes: null,
+      status: MediaStatus.deleted,
+    });
+    const prisma = {
+      mediaItem: {
+        findUnique: vi.fn().mockResolvedValue(item),
+      },
+      groupState: { findUnique: vi.fn() },
+    };
+    const telegramGateway = { downloadMediaToFile: vi.fn() };
+    const service = new MediaService(
+      prisma as never,
+      { enqueueDownload: vi.fn(), enqueueUpload: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      telegramGateway as never,
+    );
+
+    await expect(service.downloadMediaItem(item.id)).resolves.toBeUndefined();
+
+    expect(prisma.groupState.findUnique).not.toHaveBeenCalled();
+    expect(telegramGateway.downloadMediaToFile).not.toHaveBeenCalled();
   });
 
   it('stops stale recovery before claiming any item when run ownership is lost', async () => {

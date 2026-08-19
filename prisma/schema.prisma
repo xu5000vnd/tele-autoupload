@@ -27,6 +27,7 @@ enum MediaStatus {
   uploaded
   failed
   skipped
+  deleted
 }
 
 enum UserTuStatus {

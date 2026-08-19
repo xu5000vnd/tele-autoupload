@@ -32,6 +32,13 @@ export function telegramFloodWaitSeconds(err: unknown): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+export class TelegramMediaDownloadError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'TelegramMediaDownloadError';
+  }
+}
+
 export class TelegramRequestGate {
   private inFlight = 0;
   private readonly waiters: TelegramRequestWaiter[] = [];
@@ -413,27 +420,33 @@ export class TelegramGateway {
     mediaIndex: number;
     destinationPath: string;
   }, context?: TelegramReconciliationContext): Promise<{ sizeBytes: bigint }> {
-    const messages = await this.withPeerFallback(input.chatId, 'downloadMediaToFile/getMessages', async (peer) => {
-      return this.client.getMessages(peer, {
-        ids: [input.messageId],
-      });
-    }, context);
+    let buffer: Buffer;
+    try {
+      const messages = await this.withPeerFallback(input.chatId, 'downloadMediaToFile/getMessages', async (peer) => {
+        return this.client.getMessages(peer, {
+          ids: [input.messageId],
+        });
+      }, context);
 
-    const message = messages[0];
-    if (!message?.media) {
-      throw new Error(
-        `No media found: chatId=${input.chatId}, messageId=${input.messageId}`,
-      );
-    }
+      const message = messages[0];
+      if (!message?.media) {
+        throw new Error(
+          `No media found: chatId=${input.chatId}, messageId=${input.messageId}`,
+        );
+      }
 
-    const buffer = await this.runTelegramRequest(
-      context,
-      async () => this.client.downloadMedia(message, {}) as Promise<Buffer>,
-    );
-    if (!buffer || buffer.length === 0) {
-      throw new Error(
-        `Downloaded empty buffer: chatId=${input.chatId}, messageId=${input.messageId}`,
+      buffer = await this.runTelegramRequest(
+        context,
+        async () => this.client.downloadMedia(message, {}) as Promise<Buffer>,
       );
+      if (!buffer || buffer.length === 0) {
+        throw new Error(
+          `Downloaded empty buffer: chatId=${input.chatId}, messageId=${input.messageId}`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Telegram media download failed';
+      throw new TelegramMediaDownloadError(message, err);
     }
 
     await fs.writeFile(input.destinationPath, buffer);

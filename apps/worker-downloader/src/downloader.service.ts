@@ -46,6 +46,9 @@ export class DownloaderService implements OnModuleInit, OnModuleDestroy {
     if (!this.context) {
       throw new Error('downloader telegram context is not initialized');
     }
-    await this.mediaService.downloadMediaItem(job.data.mediaItemId, this.context);
+    await this.mediaService.downloadMediaItem(job.data.mediaItemId, this.context, {
+      attemptsMade: job.attemptsMade,
+      maxAttempts: job.opts.attempts ?? 1,
+    });
   }
 }

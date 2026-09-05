@@ -42,6 +42,13 @@ const baseSchema = z.object({
   HIGH_WATERMARK_PCT: z.coerce.number().min(1).max(99).default(80),
   CLEANUP_AFTER_HOURS: z.coerce.number().positive().default(2),
   RECONCILIATION_INTERVAL_MIN: z.coerce.number().int().positive().default(10),
+  RECONCILIATION_FROM: z.preprocess(
+    (value) => typeof value === 'string' ? value.trim() || undefined : value,
+    z.string().datetime({ offset: true }).refine(
+      (value) => Number.isFinite(new Date(value).getTime()),
+      'RECONCILIATION_FROM must be a valid ISO-8601 datetime with timezone',
+    ).optional(),
+  ),
   RECONCILIATION_LEASE_TTL_MS: z.coerce.number().int().positive().default(540_000),
   RECONCILIATION_LEASE_RENEWAL_MS: z.coerce.number().int().positive().default(30_000),
   RECONCILIATION_RUN_BUDGET_MS: z.coerce.number().int().positive().default(480_000),
@@ -114,6 +121,7 @@ export function parseEnv(): {
   cleanupAfterHours: number;
   reconciliationIntervalMin: number;
   reconciliation: {
+    from?: Date;
     leaseTtlMs: number;
     leaseRenewalMs: number;
     runBudgetMs: number;
@@ -207,6 +215,7 @@ export function parseEnv(): {
     cleanupAfterHours: env.CLEANUP_AFTER_HOURS,
     reconciliationIntervalMin: env.RECONCILIATION_INTERVAL_MIN,
     reconciliation: {
+      from: env.RECONCILIATION_FROM ? new Date(env.RECONCILIATION_FROM) : undefined,
       leaseTtlMs: env.RECONCILIATION_LEASE_TTL_MS,
       leaseRenewalMs: env.RECONCILIATION_LEASE_RENEWAL_MS,
       runBudgetMs: env.RECONCILIATION_RUN_BUDGET_MS,

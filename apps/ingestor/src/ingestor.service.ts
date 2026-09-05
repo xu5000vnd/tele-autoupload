@@ -458,6 +458,9 @@ export class IngestorService implements OnModuleInit, OnModuleDestroy {
             result.deferred = true;
             return result;
           }
+          if (appConfig.reconciliation.from && message.date < appConfig.reconciliation.from) {
+            continue;
+          }
           await this.handleIncoming(message, {
             notifyUnknownUploader: false,
             authorization,

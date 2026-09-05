@@ -221,6 +221,7 @@ services before starting the web admin.
 | `HIGH_WATERMARK_PCT` | optional | Pause uploads above this disk usage % (default: `80`) |
 | `CLEANUP_AFTER_HOURS` | optional | Delete local files after N hours post-upload (default: `2`) |
 | `RECONCILIATION_INTERVAL_MIN` | optional | How often to backfill missed messages (default: `10`) |
+| `RECONCILIATION_FROM` | optional | ISO-8601 datetime with timezone; reconciliation skips messages earlier than it (example: `2026-09-01T00:00:00Z`) |
 | `RECONCILIATION_LEASE_TTL_MS` | optional | Redis ownership lease for a reconciliation run (default: `540000`) |
 | `RECONCILIATION_LEASE_RENEWAL_MS` | optional | Lease renewal cadence; must be below the lease TTL (default: `30000`) |
 | `RECONCILIATION_RUN_BUDGET_MS` | optional | Maximum reconciliation runtime; must be below the interval and lease TTL (default: `480000`) |
@@ -236,7 +237,7 @@ services before starting the web admin.
 
 ### Reconciliation and downloader operations
 
-Each reconciliation tick obtains a token-checked Redis lease before it performs stale recovery or history reads. It uses an eight-minute default budget inside the ten-minute schedule, pages history at 100 messages, and checkpoints a cursor only after the page was processed. Due chats are rotated fairly when there are more than the per-run cap; Telegram channel aliases are collapsed so one physical chat is not reconciled twice.
+Each reconciliation tick obtains a token-checked Redis lease before it performs stale recovery or history reads. It uses an eight-minute default budget inside the ten-minute schedule, pages history at 100 messages, and checkpoints a cursor only after the page was processed. When `RECONCILIATION_FROM` is configured, fetched messages older than that timestamp are skipped while their pages still checkpoint; use manual backfill to recover pre-cutoff media. Due chats are rotated fairly when there are more than the per-run cap; Telegram channel aliases are collapsed so one physical chat is not reconciled twice.
 
 The downloader and ingestor share Redis-backed Telegram request permits, a global request rate, and a FloodWait pause. Keep `RECONCILIATION_CHAT_CONCURRENCY` and `DOWNLOAD_CONCURRENCY` at `1` for an initial production rollout if telemetry is not yet established, then increase no higher than `3` after run duration, reconciliation lag, and FloodWait/error logs remain healthy.
 

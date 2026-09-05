@@ -10,7 +10,7 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { UserTuStatus } from '@prisma/client';
+import { Prisma, UserTuStatus } from '@prisma/client';
 import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
 import {
@@ -47,6 +47,35 @@ interface SaveTargetInput {
   status?: UserTuStatus;
 }
 
+export interface ImportTargetInput {
+  tuId: string;
+  tuName: string;
+  path: string | null;
+  telegramUserId?: bigint;
+  telegramChatId: bigint;
+  username: string | null;
+  status: UserTuStatus;
+}
+
+export interface ImportTargetsResult {
+  total: number;
+  created: number;
+  updated: number;
+  resolved: number;
+  manual_review: ImportManualReviewRecord[];
+}
+
+export type ImportManualReviewRecord = {
+  tu_id: string;
+  tu_name: string;
+  telegram_username: string;
+  reason: 'invalid_username' | 'username_not_occupied';
+};
+
+type ResolvedImportTargetInput = ImportTargetInput & {
+  telegramUserId: bigint;
+};
+
 type TelegramRpcErrorInfo = {
   code?: number;
   message?: string;
@@ -74,6 +103,7 @@ function telegramRpcErrorInfo(err: unknown): TelegramRpcErrorInfo {
 
 @Injectable()
 export class MessagesService implements OnModuleInit, OnModuleDestroy {
+  private readonly maxImportTargets = 32767;
   private readonly dispatchingCampaigns = new Set<string>();
   private readonly dispatchConcurrency = 5;
   private readonly CampaignStatus = {
@@ -154,6 +184,20 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
 
   private isUniqueConstraintError(err: unknown): boolean {
     return Boolean(err && typeof err === 'object' && 'code' in err && err.code === 'P2002');
+  }
+
+  private isTransactionConflictError(err: unknown): boolean {
+    return Boolean(err && typeof err === 'object' && 'code' in err && err.code === 'P2034');
+  }
+
+  private importManualReviewReason(err: unknown): ImportManualReviewRecord['reason'] | undefined {
+    if (err instanceof BadRequestException && err.message === 'Telegram username is invalid') {
+      return 'invalid_username';
+    }
+    if (err instanceof NotFoundException && err.message === 'Telegram username was not found') {
+      return 'username_not_occupied';
+    }
+    return undefined;
   }
 
   async onModuleInit(): Promise<void> {
@@ -257,6 +301,160 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       }
       if (err && typeof err === 'object' && 'code' in err && err.code === 'P2025') {
         throw new NotFoundException('target not found');
+      }
+      throw err;
+    }
+  }
+
+  async importTargets(inputs: ImportTargetInput[]): Promise<ImportTargetsResult> {
+    if (!inputs.length) {
+      throw new BadRequestException('at least one target is required');
+    }
+    if (inputs.length > this.maxImportTargets) {
+      throw new BadRequestException(`imports are limited to ${this.maxImportTargets} targets`);
+    }
+
+    const tuIds = new Set<string>();
+    for (const input of inputs) {
+      if (!input.tuId || !input.tuName) {
+        throw new BadRequestException('tu_id and tu_name are required for every target');
+      }
+      if (tuIds.has(input.tuId)) {
+        throw new ConflictException(`duplicate tu_id in import: ${input.tuId}`);
+      }
+      tuIds.add(input.tuId);
+    }
+
+    const resolvedInputs: ResolvedImportTargetInput[] = [];
+    const manualReview: ImportManualReviewRecord[] = [];
+    let resolved = 0;
+    for (const input of inputs) {
+      if (input.telegramUserId !== undefined && input.telegramUserId !== 0n) {
+        resolvedInputs.push({ ...input, telegramUserId: input.telegramUserId });
+        continue;
+      }
+
+      if (!input.username) {
+        throw new BadRequestException('telegram_user_id or telegram_username is required for every target');
+      }
+
+      try {
+        const resolvedTarget = await this.resolveTargetUsername(input.username);
+        resolvedInputs.push({
+          ...input,
+          username: resolvedTarget.telegram_username,
+          telegramUserId: BigInt(resolvedTarget.telegram_user_id),
+        });
+        resolved += 1;
+      } catch (err) {
+        const reason = this.importManualReviewReason(err);
+        if (!reason) {
+          throw err;
+        }
+        manualReview.push({
+          tu_id: input.tuId,
+          tu_name: input.tuName,
+          telegram_username: input.username,
+          reason,
+        });
+      }
+    }
+
+    if (!resolvedInputs.length) {
+      return {
+        total: 0,
+        created: 0,
+        updated: 0,
+        resolved,
+        manual_review: manualReview,
+      };
+    }
+
+    const telegramIdentities = new Set<string>();
+    for (const input of resolvedInputs) {
+      const identity = `${input.telegramUserId.toString()}:${input.telegramChatId.toString()}`;
+      if (telegramIdentities.has(identity)) {
+        throw new ConflictException(`duplicate telegram user/chat pair in import: ${identity}`);
+      }
+
+      telegramIdentities.add(identity);
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const existingCount = await tx.userTu.count({
+          where: { tuId: { in: resolvedInputs.map((input) => input.tuId) } },
+        });
+        const existingIdentities = await tx.userTu.findMany({
+          where: {
+            OR: resolvedInputs.map((input) => ({
+              telegramUserId: input.telegramUserId,
+              telegramChatId: input.telegramChatId,
+            })),
+          },
+          select: {
+            tuId: true,
+            telegramUserId: true,
+            telegramChatId: true,
+          },
+        });
+        const importByIdentity = new Map(
+          resolvedInputs.map((input) => [
+            `${input.telegramUserId.toString()}:${input.telegramChatId.toString()}`,
+            input,
+          ]),
+        );
+
+        for (const existing of existingIdentities) {
+          const identity = `${existing.telegramUserId.toString()}:${existing.telegramChatId.toString()}`;
+          const input = importByIdentity.get(identity);
+          if (input && existing.tuId !== input.tuId) {
+            throw new ConflictException(
+              `telegram user/chat pair for tu_id ${input.tuId} already belongs to tu_id ${existing.tuId}`,
+            );
+          }
+        }
+
+        const now = new Date();
+        for (const input of resolvedInputs) {
+          await tx.userTu.upsert({
+            where: { tuId: input.tuId },
+            create: {
+              tuId: input.tuId,
+              tuName: input.tuName,
+              path: input.path,
+              telegramUserId: input.telegramUserId,
+              telegramChatId: input.telegramChatId,
+              username: input.username,
+              status: input.status,
+              updatedAt: now,
+            },
+            update: {
+              tuName: input.tuName,
+              path: input.path,
+              telegramUserId: input.telegramUserId,
+              telegramChatId: input.telegramChatId,
+              username: input.username,
+              status: input.status,
+              updatedAt: now,
+            },
+          });
+        }
+
+        return {
+          total: resolvedInputs.length,
+          created: resolvedInputs.length - existingCount,
+          updated: existingCount,
+          resolved,
+          manual_review: manualReview,
+        };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (err) {
+      if (this.isTransactionConflictError(err)) {
+        throw new ConflictException('another import changed the same users; retry the import');
+      }
+      if (this.isUniqueConstraintError(err)) {
+        throw new ConflictException('telegram user/chat pair conflicts with another target');
       }
       throw err;
     }

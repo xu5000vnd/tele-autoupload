@@ -6,15 +6,34 @@
         <div class="muted">Manage TU users used by upload tracking and broadcast targets.</div>
       </div>
       <div class="actions">
-        <button class="btn-secondary" :disabled="loading" type="button" @click="loadUsers">
+        <button class="btn-secondary" :disabled="loading || importing" type="button" @click="loadUsers">
           {{ loading ? 'Loading...' : 'Reload' }}
         </button>
+        <label class="btn-secondary csv-import-button">
+          <input
+            class="csv-import-input"
+            :disabled="loading || importing"
+            accept=".csv,text/csv"
+            type="file"
+            @change="importCsv"
+          />
+          {{ importing ? 'Importing...' : 'Import CSV' }}
+        </label>
         <button type="button" @click="startCreate">New User</button>
       </div>
     </div>
 
     <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
     <p v-if="successMsg" class="ok">{{ successMsg }}</p>
+    <div v-if="manualReview.length" class="manual-review">
+      <strong>Manual review needed</strong>
+      <ul>
+        <li v-for="review in manualReview" :key="`${review.tu_id}:${review.telegram_username}`">
+          {{ review.tu_name }} ({{ review.tu_id }}) — @{{ review.telegram_username }}:
+          {{ review.reason === 'invalid_username' ? 'invalid username' : 'username not occupied' }}
+        </li>
+      </ul>
+    </div>
 
     <div class="layout">
       <section class="card">
@@ -173,19 +192,37 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import {
   addTarget,
+  importTargets,
   listTargets,
   resolveTelegramUsername,
+  type ImportManualReviewRecord,
   updateTarget,
+  type ImportTargetRequest,
   type SaveTargetRequest,
   type Target,
 } from '../services/api';
 
 type StatusFilter = 'active' | 'inactive' | 'all';
+type CsvRecord = { fields: string[]; line: number };
+type ParsedImportCsv = {
+  targets: ImportTargetRequest[];
+  skipped: number;
+};
+
+const IMPORT_HEADERS = [
+  'tu_id',
+  'telegram_chat_id',
+  'telegram_username',
+  'telegram_user_id',
+  'tu_name',
+  'path',
+];
 
 const users = ref<Target[]>([]);
 const filteredUsers = ref<Target[]>([]);
 const loading = ref(false);
 const saving = ref(false);
+const importing = ref(false);
 const resolvingUsername = ref(false);
 const search = ref('');
 const statusFilter = ref<StatusFilter>('all');
@@ -193,6 +230,7 @@ const editingId = ref<number | null>(null);
 const formOpen = ref(false);
 const errorMsg = ref('');
 const successMsg = ref('');
+const manualReview = ref<ImportManualReviewRecord[]>([]);
 
 const form = reactive({
   tu_id: '',
@@ -225,6 +263,179 @@ function applyLocalFilter(): void {
   });
 }
 
+function parseCsvRecords(content: string): CsvRecord[] {
+  const records: CsvRecord[] = [];
+  let fields: string[] = [];
+  let field = '';
+  let line = 1;
+  let recordLine = 1;
+  let inQuotes = false;
+  let afterQuote = false;
+  let quoteLine = 1;
+
+  const finishRecord = (): void => {
+    fields.push(field);
+    if (fields.length > 1 || fields[0].trim()) {
+      records.push({ fields, line: recordLine });
+    }
+    fields = [];
+    field = '';
+    afterQuote = false;
+    recordLine = line + 1;
+  };
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    const next = content[index + 1];
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (next === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+          afterQuote = true;
+        }
+      } else if (char === '\r' || char === '\n') {
+        if (char === '\r' && next === '\n') {
+          index += 1;
+        }
+        field += '\n';
+        line += 1;
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (afterQuote) {
+      if (char === ',') {
+        fields.push(field);
+        field = '';
+        afterQuote = false;
+      } else if (char === '\r' || char === '\n') {
+        finishRecord();
+        if (char === '\r' && next === '\n') {
+          index += 1;
+        }
+        line += 1;
+      } else if (char !== ' ' && char !== '\t') {
+        throw new Error(`Line ${line}: unexpected character after closing quote`);
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      if (field) {
+        throw new Error(`Line ${line}: unexpected quote`);
+      }
+      inQuotes = true;
+      quoteLine = line;
+    } else if (char === ',') {
+      fields.push(field);
+      field = '';
+    } else if (char === '\r' || char === '\n') {
+      finishRecord();
+      if (char === '\r' && next === '\n') {
+        index += 1;
+      }
+      line += 1;
+    } else {
+      field += char;
+    }
+  }
+
+  if (inQuotes) {
+    throw new Error(`Line ${quoteLine}: missing closing quote`);
+  }
+  if (fields.length || field) {
+    finishRecord();
+  }
+
+  return records;
+}
+
+function requireCsvValue(value: string, field: string, line: number): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`Line ${line}: ${field} is required`);
+  }
+  return trimmed;
+}
+
+function parseInteger(value: string, field: string, line: number): string {
+  const trimmed = requireCsvValue(value, field, line);
+  if (!/^-?\d+$/.test(trimmed)) {
+    throw new Error(`Line ${line}: ${field} must be an integer`);
+  }
+  return trimmed;
+}
+
+function parseImportCsv(content: string): ParsedImportCsv {
+  const records = parseCsvRecords(content.replace(/^\uFEFF/, ''));
+  if (!records.length) {
+    throw new Error('CSV is empty');
+  }
+
+  const header = records[0].fields.map((field) => field.trim());
+  if (header.length !== IMPORT_HEADERS.length || header.some((field, index) => field !== IMPORT_HEADERS[index])) {
+    throw new Error(`CSV header must be: ${IMPORT_HEADERS.join(', ')}`);
+  }
+
+  const tuIdLines = new Map<string, number>();
+  const telegramIdentityLines = new Map<string, number>();
+  const targets: ImportTargetRequest[] = [];
+  let skipped = 0;
+  for (const { fields, line } of records.slice(1)) {
+    if (fields.length !== IMPORT_HEADERS.length) {
+      throw new Error(`Line ${line}: expected ${IMPORT_HEADERS.length} columns`);
+    }
+
+    const [tuIdRaw, chatIdRaw, usernameRaw, userIdRaw, tuNameRaw, pathRaw] = fields.map((field) => field.trim());
+    if (!pathRaw) {
+      skipped += 1;
+      continue;
+    }
+
+    const username = usernameRaw.replace(/^@+/, '').toLowerCase() || null;
+    const telegramUserId = userIdRaw ? parseInteger(userIdRaw, 'telegram_user_id', line) : '';
+    if (!username && (!telegramUserId || BigInt(telegramUserId) === 0n)) {
+      skipped += 1;
+      continue;
+    }
+
+    const tuId = requireCsvValue(tuIdRaw, 'tu_id', line);
+    const telegramChatId = parseInteger(chatIdRaw, 'telegram_chat_id', line);
+    const existingTuIdLine = tuIdLines.get(tuId);
+    if (existingTuIdLine !== undefined) {
+      throw new Error(`Line ${line}: duplicate tu_id ${tuId} (first used on line ${existingTuIdLine})`);
+    }
+
+    if (telegramUserId && BigInt(telegramUserId) !== 0n) {
+      const identity = `${telegramUserId}:${telegramChatId}`;
+      const existingIdentityLine = telegramIdentityLines.get(identity);
+      if (existingIdentityLine !== undefined) {
+        throw new Error(`Line ${line}: duplicate telegram user/chat pair (first used on line ${existingIdentityLine})`);
+      }
+      telegramIdentityLines.set(identity, line);
+    }
+
+    tuIdLines.set(tuId, line);
+    targets.push({
+      tu_id: tuId,
+      tu_name: requireCsvValue(tuNameRaw, 'tu_name', line),
+      telegram_chat_id: telegramChatId,
+      telegram_user_id: telegramUserId,
+      telegram_username: username,
+      path: pathRaw || null,
+      status: 'active' as const,
+    });
+  }
+
+  return { targets, skipped };
+}
+
 async function loadUsers(): Promise<void> {
   loading.value = true;
   errorMsg.value = '';
@@ -235,6 +446,37 @@ async function loadUsers(): Promise<void> {
     errorMsg.value = err instanceof Error ? err.message : String(err);
   } finally {
     loading.value = false;
+  }
+}
+
+async function importCsv(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file || importing.value) {
+    return;
+  }
+
+  importing.value = true;
+  errorMsg.value = '';
+  successMsg.value = '';
+  manualReview.value = [];
+
+  try {
+    const { targets, skipped } = parseImportCsv(await file.text());
+    if (!targets.length) {
+      successMsg.value = `Imported 0 users: 0 created, 0 updated, 0 IDs resolved, ${skipped} skipped.`;
+      return;
+    }
+
+    const result = await importTargets(targets);
+    manualReview.value = result.manual_review;
+    successMsg.value = `Imported ${result.total} users: ${result.created} created, ${result.updated} updated, ${result.resolved} IDs resolved, ${skipped} skipped, ${result.manual_review.length} need manual review.`;
+    await loadUsers();
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    importing.value = false;
+    input.value = '';
   }
 }
 
@@ -528,6 +770,28 @@ tr.selected {
   flex-wrap: wrap;
 }
 
+.csv-import-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  color: #fff;
+  cursor: pointer;
+}
+
+.csv-import-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  white-space: nowrap;
+}
+
 button {
   background: #2563eb;
   color: #fff;
@@ -570,6 +834,18 @@ button:disabled {
 
 .muted {
   color: #94a3b8;
+}
+
+.manual-review {
+  border: 1px solid #facc15;
+  border-radius: 8px;
+  color: #fef3c7;
+  padding: 12px 16px;
+}
+
+.manual-review ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
 }
 
 .err {

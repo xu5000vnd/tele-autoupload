@@ -1,9 +1,12 @@
 import { BadRequestException, Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { UserTuStatus } from '@prisma/client';
 import { BearerAuthGuard } from './auth.guard';
-import { MessagesService } from './messages.service';
+import { type ImportTargetInput, type ImportTargetsResult, MessagesService } from './messages.service';
 
 type TargetBody = Record<string, unknown>;
+
+const POSTGRES_BIGINT_MIN = -(2n ** 63n);
+const POSTGRES_BIGINT_MAX = (2n ** 63n) - 1n;
 
 type TargetInput = {
   tuId?: string;
@@ -31,6 +34,11 @@ export class MessagesController {
   @Post('targets/resolve-username')
   async resolveTargetUsername(@Body() body: TargetBody): Promise<Record<string, string>> {
     return this.messagesService.resolveTargetUsername(readRequiredTelegramUsername(body));
+  }
+
+  @Post('targets/import')
+  async importTargets(@Body() body: TargetBody): Promise<ImportTargetsResult> {
+    return this.messagesService.importTargets(parseImportTargetsBody(body));
   }
 
   @Post('targets')
@@ -130,6 +138,55 @@ function parseTargetBody(body: TargetBody, requireCoreFields: boolean): TargetIn
   return input;
 }
 
+function parseImportTargetsBody(body: TargetBody): ImportTargetInput[] {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new BadRequestException('body must be an object');
+  }
+  if (!Array.isArray(body.targets) || !body.targets.length) {
+    throw new BadRequestException('targets must be a non-empty array');
+  }
+
+  return body.targets.map((target, index) => parseImportTarget(target, index));
+}
+
+function parseImportTarget(value: unknown, index: number): ImportTargetInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException(`targets[${index}] must be an object`);
+  }
+
+  const body = value as TargetBody;
+  const requiredFields = [
+    'tu_id',
+    'telegram_chat_id',
+    'telegram_username',
+    'telegram_user_id',
+    'tu_name',
+    'path',
+  ];
+  for (const field of requiredFields) {
+    if (!(field in body)) {
+      throw new BadRequestException(`targets[${index}].${field} is required`);
+    }
+  }
+
+  const rawUsername = readNullableString(body, 'telegram_username');
+  const username = normalizeTelegramUsername(rawUsername ?? null);
+  const telegramUserId = readOptionalImportBigInt(body, 'telegram_user_id');
+  if ((telegramUserId === undefined || telegramUserId === 0n) && !username) {
+    throw new BadRequestException(`targets[${index}] requires telegram_user_id or telegram_username`);
+  }
+
+  return {
+    tuId: readString(body, 'tu_id', true) as string,
+    tuName: readString(body, 'tu_name', true) as string,
+    path: readNullableString(body, 'path') ?? null,
+    telegramUserId: telegramUserId === 0n ? undefined : telegramUserId,
+    telegramChatId: readImportBigInt(body, 'telegram_chat_id', true) as bigint,
+    username,
+    status: readStatus(body) ?? UserTuStatus.active,
+  };
+}
+
 function normalizeTelegramUsername(username: string | null): string | null {
   if (!username) {
     return null;
@@ -209,6 +266,27 @@ function readBigInt(body: TargetBody, key: string, required: boolean): bigint | 
   }
 
   return BigInt(raw);
+}
+
+function readOptionalImportBigInt(body: TargetBody, key: string): bigint | undefined {
+  const value = body[key];
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) {
+    return undefined;
+  }
+  return readImportBigInt(body, key, true);
+}
+
+function readImportBigInt(body: TargetBody, key: string, required: boolean): bigint | undefined {
+  const value = body[key];
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    throw new BadRequestException(`${key} must be a decimal string when it exceeds JavaScript's safe integer range`);
+  }
+
+  const parsed = readBigInt(body, key, required);
+  if (parsed !== undefined && (parsed < POSTGRES_BIGINT_MIN || parsed > POSTGRES_BIGINT_MAX)) {
+    throw new BadRequestException(`${key} is outside PostgreSQL bigint range`);
+  }
+  return parsed;
 }
 
 function readStatus(body: TargetBody): UserTuStatus | undefined {

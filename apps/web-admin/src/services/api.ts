@@ -182,6 +182,31 @@ export type SaveTargetRequest = {
   status?: 'active' | 'inactive';
 };
 
+export type ImportTargetRequest = {
+  tu_id: string;
+  tu_name: string;
+  telegram_chat_id: string;
+  telegram_user_id: string;
+  telegram_username: string | null;
+  path: string | null;
+  status: 'active' | 'inactive';
+};
+
+export type ImportTargetsResponse = {
+  total: number;
+  created: number;
+  updated: number;
+  resolved: number;
+  manual_review: ImportManualReviewRecord[];
+};
+
+export type ImportManualReviewRecord = {
+  tu_id: string;
+  tu_name: string;
+  telegram_username: string;
+  reason: 'invalid_username' | 'username_not_occupied';
+};
+
 export type ResolveTelegramUsernameRequest = {
   telegram_username: string;
 };
@@ -210,6 +235,10 @@ export function addTarget(payload: SaveTargetRequest): Promise<Target> {
 
 export function updateTarget(id: number, payload: SaveTargetRequest): Promise<Target> {
   return apiPut<Target>(`/api/messages/targets/${id}`, payload);
+}
+
+export function importTargets(targets: ImportTargetRequest[]): Promise<ImportTargetsResponse> {
+  return apiPost<ImportTargetsResponse>('/api/messages/targets/import', { targets });
 }
 
 export function resolveTelegramUsername(

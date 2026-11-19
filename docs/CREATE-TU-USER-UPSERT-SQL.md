@@ -1,3 +1,7 @@
+> Retained source for migration review, not current implementation guidance.
+> Use the [migration map](migration-map.md) and [current status](status.md).
+> The original body is preserved below; no deletion is approved.
+
 # Create `user_tu` Upsert SQL From `tu_user.csv`
 
 This guide explains how to generate a PostgreSQL upsert SQL file from `tu_user.csv`.

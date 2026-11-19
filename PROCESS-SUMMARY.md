@@ -1,3 +1,7 @@
+> Retained source for migration review, not current implementation guidance.
+> Use the [migration map](docs/migration-map.md) and [current status](docs/status.md).
+> The original body is preserved below; no deletion is approved.
+
 # Process Summary — Telegram Media Auto-Upload Pipeline
 
 A concise overview of every process in the system, how they interact, and what each one does.

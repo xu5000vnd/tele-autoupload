@@ -1,3 +1,7 @@
+> Retained source for migration review, not current implementation guidance.
+> Use the [migration map](docs/migration-map.md) and [current status](docs/status.md).
+> The original body is preserved below; no deletion is approved.
+
 # Telegram → Queue → Download → Google Drive Uploader (Client Session, Event-driven)
 
 > Goal: Realtime ingest media (images/videos) from ~100 Telegram groups, optionally filtered by specific sender user IDs, then download and upload to Google Drive with dedupe, retries, and observability.

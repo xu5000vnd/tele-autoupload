@@ -14,6 +14,10 @@ export interface IncomingMessage {
   chatType: 'group' | 'supergroup' | 'channel';
   messageId: bigint;
   groupedId?: bigint;
+  albumId?: string;
+  transport?: 'legacy' | 'bot';
+  botId?: bigint;
+  sourceRevision?: bigint;
   senderId?: bigint;
   senderUsername?: string;
   date: Date;

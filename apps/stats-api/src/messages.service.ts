@@ -200,7 +200,12 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     return undefined;
   }
 
+  private assertLegacyEnabled(): void {
+    if (!appConfig.legacyTelegramEnabled) throw new ServiceUnavailableException('Account messaging and username lookup are disabled; use explicit Telegram IDs or enable the legacy capability');
+  }
+
   async onModuleInit(): Promise<void> {
+    if (!appConfig.legacyTelegramEnabled) return;
     try {
       await this.telegramGateway.connect({ withUpdates: false });
       logger.info('messages service telegram gateway connected');
@@ -210,7 +215,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.telegramGateway.disconnect();
+    if (appConfig.legacyTelegramEnabled) await this.telegramGateway.disconnect();
   }
 
   async listTargets(query?: string, status: UserTuStatus | 'all' = UserTuStatus.active): Promise<Record<string, unknown>[]> {
@@ -461,6 +466,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async resolveTargetUsername(telegramUsername: string): Promise<Record<string, string>> {
+    this.assertLegacyEnabled();
     const normalizedUsername = normalizeTelegramUsername(telegramUsername);
     if (!normalizedUsername) {
       throw new BadRequestException('telegram_username is required');
@@ -506,6 +512,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
   }
 
   async createCampaign(input: CreateCampaignInput): Promise<Record<string, unknown>> {
+    this.assertLegacyEnabled();
     if (!this.hasCampaignStorage()) {
       throw new ServiceUnavailableException(
         'message campaign storage is not initialized (run prisma migrate + prisma generate)',
@@ -696,6 +703,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async dispatchCampaign(campaignId: string): Promise<void> {
+    this.assertLegacyEnabled();
     if (this.dispatchingCampaigns.has(campaignId)) {
       return;
     }

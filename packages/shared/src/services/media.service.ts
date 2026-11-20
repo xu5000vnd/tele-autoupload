@@ -7,7 +7,7 @@ import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { JobEventLogService } from '@shared/services/job-event-log.service';
-import { TelegramGateway, TelegramMediaDownloadError, TelegramReconciliationContext } from '@shared/telegram/telegram-gateway';
+import { BotTelegramService } from '@shared/telegram/bot-telegram.service';
 import { IncomingMedia, IncomingMessage } from '@shared/types/telegram';
 import { makeDeterministicFileName } from '@shared/utils/file-naming';
 import { hashFileSha256 } from '@shared/utils/hash';
@@ -41,7 +41,7 @@ export class MediaService {
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
     private readonly eventLogService: JobEventLogService,
-    private readonly telegramGateway: TelegramGateway,
+    private readonly botTelegram: BotTelegramService,
   ) {}
 
   async processIncomingMessage(
@@ -92,7 +92,9 @@ export class MediaService {
         select: { id: true },
       });
 
-      const mediaItem = await this.prisma.mediaItem.upsert({
+      const mediaItem = message.transport === 'bot'
+        ? await this.persistBotMedia(message, media)
+        : await this.prisma.mediaItem.upsert({
         where: uniqueWhere,
         update: {
           senderId: message.senderId,
@@ -119,6 +121,7 @@ export class MediaService {
         },
       });
 
+      if (!mediaItem) continue;
       if (mediaItem.status === MediaStatus.deleted) {
         logger.info(
           this.buildLogContext({
@@ -179,6 +182,43 @@ export class MediaService {
 
       await this.enqueueDownload(message, media, mediaItem, uploader, existedBefore ? 'replayed-media' : 'new-media');
     }
+  }
+
+  private async persistBotMedia(message: IncomingMessage, media: IncomingMedia): Promise<MediaItem | null> {
+    if (!message.botId || !message.sourceRevision) throw new Error('Missing bot media provenance');
+    const where = { chatId_messageId_mediaIndex: { chatId: message.chatId, messageId: message.messageId, mediaIndex: media.mediaIndex } };
+    const metadata = { senderId: message.senderId, mediaType: media.type as MediaType,
+      mimeType: media.mimeType, fileName: media.fileName, tgFileId: media.fileId,
+      tgFileUniqueId: media.uniqueId ?? `idx:${media.mediaIndex}`, transport: 'bot' as const,
+      botId: message.botId, albumId: message.albumId, sourceRevision: message.sourceRevision };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const item = await this.prisma.mediaItem.upsert({ where, update: {}, create: {
+        ...metadata, chatId: message.chatId, messageId: message.messageId,
+        mediaIndex: media.mediaIndex, date: message.date, sizeBytes: media.size,
+        status: MediaStatus.queued, priority: media.type === 'photo' ? 0 : 5,
+      } });
+      if (item.sourceRevision > message.sourceRevision) return null;
+      if (item.sourceRevision === message.sourceRevision) return item;
+      const contentChanged = item.transport !== 'bot' || item.botId !== message.botId || item.tgFileUniqueId !== metadata.tgFileUniqueId;
+      if (contentChanged && item.status === MediaStatus.uploading) {
+        throw new Error('Media upload is in progress; retry the captured edit after it settles');
+      }
+      const replaceStaging = contentChanged && item.status !== MediaStatus.uploaded && item.status !== MediaStatus.deleted;
+      const changed = await this.prisma.mediaItem.updateMany({ where: { id: item.id, sourceRevision: item.sourceRevision, status: item.status, updatedAt: item.updatedAt }, data: {
+        ...metadata, updatedAt: new Date(),
+        ...(replaceStaging ? { status: MediaStatus.queued, downloadLeaseToken: null, localPath: null, sizeBytes: media.size ?? null, sha256: null } : {}),
+        ...(item.status === MediaStatus.downloading ? { status: MediaStatus.queued, downloadLeaseToken: null } : {}),
+      } });
+      if (changed.count === 1) {
+        if (replaceStaging && item.localPath) {
+          await fs.rm(item.localPath, { force: true }).catch((err) => logger.warn({ err, mediaItemId: item.id }, 'failed to remove superseded staged media'));
+          if (item.transport === 'bot') await fs.rmdir(path.dirname(item.localPath)).catch(() => undefined);
+          if (item.transport === 'bot') await fs.rmdir(path.dirname(path.dirname(item.localPath))).catch(() => undefined);
+        }
+        return this.prisma.mediaItem.findUnique({ where: { id: item.id } });
+      }
+    }
+    throw new Error('Media reference changed concurrently; retry captured update');
   }
 
   async recoverStaleMediaItems(input: number | StaleRecoveryOptions = appConfig.reconciliationIntervalMin * 60_000): Promise<number> {
@@ -337,7 +377,6 @@ export class MediaService {
 
   async downloadMediaItem(
     mediaItemId: string,
-    context?: TelegramReconciliationContext,
     attempt?: DownloadAttemptMetadata,
   ): Promise<void> {
     const mediaItem = await this.prisma.mediaItem.findUnique({ where: { id: mediaItemId } });
@@ -359,7 +398,7 @@ export class MediaService {
     if (mediaItem.status === MediaStatus.downloading || mediaItem.status === MediaStatus.uploading) {
       return;
     }
-    await this.downloadAndQueueMedia(message, media, mediaItem, uploader, context, attempt);
+    await this.downloadAndQueueMedia(message, media, mediaItem, uploader, attempt);
   }
 
   private async downloadAndQueueMedia(
@@ -367,7 +406,6 @@ export class MediaService {
     media: IncomingMedia,
     mediaItem: MediaItem,
     uploader?: ResolvedUploaderContext,
-    context?: TelegramReconciliationContext,
     attempt?: DownloadAttemptMetadata,
   ): Promise<void> {
     const fileName = makeDeterministicFileName({
@@ -379,7 +417,9 @@ export class MediaService {
       mimeType: mediaItem.mimeType ?? undefined,
     });
     const chatDir = path.join(appConfig.stagingDir, `chat_${message.chatId.toString()}`);
-    const localPath = path.join(chatDir, fileName);
+    const localPath = mediaItem.transport === 'bot'
+      ? path.join(chatDir, mediaItem.id, randomUUID(), fileName)
+      : path.join(chatDir, fileName);
 
     const claimTime = new Date();
     const downloadLeaseToken = randomUUID();
@@ -388,6 +428,7 @@ export class MediaService {
         id: mediaItem.id,
         status: mediaItem.status,
         updatedAt: mediaItem.updatedAt,
+        ...(mediaItem.transport === 'bot' ? { sourceRevision: mediaItem.sourceRevision } : {}),
       },
       data: {
         status: MediaStatus.downloading,
@@ -403,14 +444,13 @@ export class MediaService {
     }
 
     let downloadPersisted = false;
-    let telegramDownloadFailed = false;
     let completedAt: Date | undefined;
     const heartbeat = setInterval(() => {
       void this.refreshDownloadHeartbeat(mediaItem.id, downloadLeaseToken);
     }, appConfig.downloadHeartbeatMs);
     try {
       await this.eventLogService.log(mediaItem.id, 'download_start', {});
-      await fs.mkdir(chatDir, { recursive: true });
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
 
       logger.info(
         this.buildLogContext({
@@ -426,17 +466,8 @@ export class MediaService {
       );
 
       let sizeBytes: bigint;
-      try {
-        ({ sizeBytes } = await this.telegramGateway.downloadMediaToFile({
-          chatId: message.chatId,
-          messageId: Number(message.messageId),
-          mediaIndex: media.mediaIndex,
-          destinationPath: localPath,
-        }, context));
-      } catch (err) {
-        telegramDownloadFailed = err instanceof TelegramMediaDownloadError;
-        throw err;
-      }
+      if (mediaItem.transport !== 'bot' || !mediaItem.botId) throw new Error('Legacy media has no bot file reference; resubmit it to the bot');
+      ({ sizeBytes } = await this.botTelegram.download({ fileId: mediaItem.tgFileId, botId: mediaItem.botId }, localPath));
 
       const sha256 = await hashFileSha256(localPath);
 
@@ -446,6 +477,7 @@ export class MediaService {
           id: mediaItem.id,
           status: MediaStatus.downloading,
           downloadLeaseToken,
+          ...(mediaItem.transport === 'bot' ? { sourceRevision: mediaItem.sourceRevision } : {}),
         },
         data: {
           status: MediaStatus.downloaded,
@@ -463,6 +495,10 @@ export class MediaService {
           { mediaItemId: mediaItem.id },
           'download completed after media item ownership was lost; skipping handoff',
         );
+        if (mediaItem.transport === 'bot') {
+          await fs.rm(path.dirname(localPath), { recursive: true, force: true });
+          await fs.rmdir(path.dirname(path.dirname(localPath))).catch(() => undefined);
+        }
         return;
       }
       downloadPersisted = true;
@@ -502,7 +538,6 @@ export class MediaService {
       );
     } catch (err) {
       const errorMessage = (err as Error).message;
-      const terminalDownloadFailure = telegramDownloadFailed && this.isFinalDownloadAttempt(attempt);
       logger.error(
         {
           err,
@@ -514,9 +549,7 @@ export class MediaService {
             tgFileUniqueId: mediaItem.tgFileUniqueId ?? `idx:${mediaItem.mediaIndex}`,
             mediaStatus: downloadPersisted
               ? MediaStatus.downloaded
-              : terminalDownloadFailure
-                ? MediaStatus.deleted
-                : MediaStatus.failed,
+              : MediaStatus.failed,
             localPath,
           }),
         },
@@ -528,13 +561,13 @@ export class MediaService {
         downloadPersisted,
         downloadLeaseToken,
         completedAt,
-        terminalDownloadFailure,
       );
-      if (terminalDownloadFailure) {
+      if (mediaItem.transport === 'bot' && !downloadPersisted) {
         try {
-          await fs.rm(localPath, { force: true });
+          await fs.rm(path.dirname(localPath), { recursive: true, force: true });
+          await fs.rmdir(path.dirname(path.dirname(localPath))).catch(() => undefined);
         } catch (cleanupError) {
-          logger.warn({ err: cleanupError, mediaItemId: mediaItem.id, localPath }, 'failed to remove incomplete terminal download');
+          logger.warn({ err: cleanupError, mediaItemId: mediaItem.id, localPath }, 'failed to remove owned incomplete download');
         }
       }
       throw err;
@@ -564,7 +597,6 @@ export class MediaService {
     downloadPersisted: boolean,
     downloadLeaseToken: string,
     completedAt?: Date,
-    terminalDownloadFailure = false,
   ): Promise<void> {
     const now = new Date();
     try {
@@ -589,9 +621,7 @@ export class MediaService {
           // not discard it or force another Telegram download.
           status: downloadPersisted
             ? MediaStatus.downloaded
-            : terminalDownloadFailure
-              ? MediaStatus.deleted
-              : MediaStatus.failed,
+            : MediaStatus.failed,
           downloadLeaseToken: null,
           error: errorMessage,
           failedAt: downloadPersisted ? null : now,
@@ -696,6 +726,10 @@ export class MediaService {
       chatType: groupState.chatType as IncomingMessage['chatType'],
       messageId: item.messageId,
       groupedId: item.groupedId ?? undefined,
+      albumId: item.albumId ?? undefined,
+      transport: item.transport,
+      botId: item.botId ?? undefined,
+      sourceRevision: item.sourceRevision,
       senderId: item.senderId ?? undefined,
       date: item.date,
       media: [this.buildMediaFromItem(item)],
@@ -757,10 +791,6 @@ export class MediaService {
       status === MediaStatus.downloaded ||
       status === MediaStatus.uploading ||
       status === MediaStatus.failed;
-  }
-
-  private isFinalDownloadAttempt(attempt?: DownloadAttemptMetadata): boolean {
-    return !!attempt && attempt.attemptsMade + 1 >= attempt.maxAttempts;
   }
 
   private canResumeUpload(item: MediaItem, fileExists: boolean): boolean {

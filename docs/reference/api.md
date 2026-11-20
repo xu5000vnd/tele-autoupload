@@ -51,7 +51,7 @@ Inventory extracted from the linked controller decorators during this migration.
 | dashboard/months/:monthKey/users | sortBy, sortOrder, limit (50), offset (0); cycle user breakdown |
 | dashboard/current-month/missing-image-users | Same sort/pagination inputs; current-cycle missing-image selection |
 | dashboard/users/:userId/upload-history | Positive numeric UserTu record ID, limit (90); per-user history |
-| health | Database query, upload queue query and staging usage; guarded like other stats routes |
+| health | Database query, upload queue query, staging usage and local Bot API/receiver freshness; guarded like other stats routes |
 
 [StatsService](../../apps/stats-api/src/stats.service.ts) owns response construction and validation.
 [Reporting time](../../.principles/code/reporting-time.md) owns date-boundary rules.
@@ -70,7 +70,7 @@ Daily aggregate, queue inspector/requeue and Telegram/Drive metric routes from s
 | Target response | id, tu_id, tu_name, path, decimal-string telegram IDs, telegram_username, status |
 | Import | Body contains nonempty targets array; each entry must contain tu_id, tu_name, path and the three telegram fields, even if a nullable field is empty |
 | Import identifier handling | Missing/zero sender ID requires a username; numeric input must be safe, and parsed IDs must fit PostgreSQL bigint |
-| Import resolution | Missing/zero sender IDs are resolved; invalid/unoccupied usernames contribute to manual_review; other lookup failures abort |
+| Import resolution | Missing/zero sender IDs require enabled account lookup; invalid/unoccupied usernames contribute to manual_review; other lookup failures abort. Explicit-ID imports remain available without account access. |
 | Import response | total, created, updated, resolved, manual_review; total refers to resolved inputs passed to persistence |
 
 The import limit is 32767 inputs. Duplicate tu_id entries and conflicting user/chat pairs are rejected.
@@ -101,6 +101,7 @@ Successful response:
 | Situation | HTTP status | Client-safe message |
 | --- | ---: | --- |
 | Missing, non-string, or empty username | 400 | `telegram_username is required` / `telegram_username must be a string` |
+| Legacy account capability disabled | 503 | `Account messaging and username lookup are disabled; use explicit Telegram IDs or enable the legacy capability` |
 | Telegram reports `USERNAME_INVALID` | 400 | `Telegram username is invalid` |
 | Telegram reports `USERNAME_NOT_OCCUPIED` | 404 | `Telegram username was not found` |
 | Username resolves to a group, channel or bot | 422 | `Telegram username does not belong to a user` |
@@ -114,6 +115,7 @@ The endpoint itself has no application retry loop. The existing gate shares spac
 Campaign creation accepts targetIds (UserTu record IDs), body, optional createdBy and media entries containing fileName, mimeType and base64.
 It requires active targets and body or media. Targets are deduplicated by chat ID.
 The response contains campaign_id, total_targets, media_count and queued status; delivery runs asynchronously in the API process.
+Campaign creation and manual reminder dispatch return 503 before creating work when LEGACY_TELEGRAM_ENABLED=false; scheduled reminder dispatch is skipped. Target CRUD, explicit-ID import and stored campaign history remain available.
 Body templates support tu_name, tu_id, telegram_username, telegram_user_id and telegram_chat_id substitutions.
 History listing uses limit (20) and offset (0); detail uses campaignId.
 [HistoryDetailResponse](../../apps/web-admin/src/services/api.ts) describes target/media fields; [MessagesService](../../apps/stats-api/src/messages.service.ts) owns dispatch and error behavior.
@@ -137,6 +139,7 @@ Preview is the default; only the boolean false requests run mode.
 Date-only bounds expand to the beginning/end of a day at UTC+07:00; other accepted date strings are parsed as dates.
 The end cannot precede the start; the group must have active selected users.
 Response fields include dry_run, chat_id, date bounds, selected_users, scanned_messages, matched_messages, media_found, queued_media, retried_failed, skipped_existing, unknown_senders, processed_messages and max_seen_message_id.
+The data source is now the captured bot inbox, not Telegram history. Additive fields are source (`bot_inbox`), capture_started_at (ISO timestamp or null), coverage (`captured`, `partial`, `unavailable`) and coverage_note. Coverage describes the recorded intake boundary, not a guarantee of complete Telegram delivery. The newest captured edit of each message is used. Run mode does not change history checkpoints.
 [Backfill specification](../../specs/manual-backfill.md) owns eligibility, safety and the scan boundary.
 
 ## Sources

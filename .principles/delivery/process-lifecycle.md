@@ -2,7 +2,8 @@
 
 ## Rule
 
-- Preserve existing worker shutdown: close the BullMQ worker before disconnecting its Telegram client.
+- Close BullMQ workers on shutdown; media workers have no account Telegram connection to disconnect.
+- The ingestor stops bot intake/dispatch, aborts its polling request and waits for the loops to finish. Preserve token-checked lease release.
 - Keep headless workers on Nest application contexts and HTTP serving in the stats API entry point.
 - Preserve explicit signal handlers where they exist; do not describe every service as having the same shutdown behavior.
 - Keep operational instructions grounded in the configured scripts and process definitions.

@@ -2,8 +2,8 @@
   <section class="stack">
     <div class="card top-row">
       <div>
-        <h2>Media Backfill</h2>
-        <div class="muted">Scan existing Telegram history and queue missing media for imported users.</div>
+        <h2>Captured Media Replay</h2>
+        <div class="muted">Replay media captured by the bot after capture began. Old Telegram history is unavailable.</div>
       </div>
     </div>
 
@@ -41,7 +41,7 @@
             {{ submitting && activeAction === 'preview' ? 'Previewing...' : 'Preview' }}
           </button>
           <button type="button" :disabled="submitting" @click="runBackfill">
-            {{ submitting && activeAction === 'run' ? 'Running...' : 'Run Backfill' }}
+            {{ submitting && activeAction === 'run' ? 'Running...' : 'Run Replay' }}
           </button>
         </div>
       </form>
@@ -50,7 +50,7 @@
     <section v-if="result" class="card result-card">
       <div class="result-heading">
         <div>
-          <h3>{{ result.dry_run ? 'Preview Result' : 'Backfill Result' }}</h3>
+          <h3>{{ result.dry_run ? 'Preview Result' : 'Replay Result' }}</h3>
           <div class="muted">
             {{ formatDate(result.from_date) }} to {{ formatDate(result.to_date) }} · chat {{ result.chat_id }}
           </div>
@@ -60,6 +60,8 @@
         </span>
       </div>
 
+      <p class="muted">{{ result.coverage_note }} Coverage: {{ result.coverage }}.
+        Capture started: {{ result.capture_started_at ? formatDate(result.capture_started_at) : 'not available' }}.</p>
       <div class="metrics-grid">
         <div>
           <span class="metric-value">{{ result.selected_users.length }}</span>
@@ -190,7 +192,7 @@ async function submitBackfill(dryRun: boolean): Promise<void> {
     });
     successMsg.value = dryRun
       ? 'Preview completed. No media was queued or retried.'
-      : `Backfill completed. Queued ${result.value.queued_media} new and retried ${result.value.retried_failed} failed media item(s).`;
+      : `Replay completed. Queued ${result.value.queued_media} new and retried ${result.value.retried_failed} failed media item(s).`;
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err);
   } finally {

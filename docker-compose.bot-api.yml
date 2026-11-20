@@ -1,0 +1,22 @@
+services:
+  bot-api:
+    build:
+      context: ./docker
+      dockerfile: telegram-bot-api.Dockerfile
+    image: tele-autoupload-bot-api:10.4
+    restart: unless-stopped
+    user: '${BOT_API_UID:-1000}:${BOT_API_GID:-1000}'
+    environment:
+      TELEGRAM_API_ID: '${TG_API_ID:?Set TG_API_ID for the local Bot API server}'
+      TELEGRAM_API_HASH: '${TG_API_HASH:?Set TG_API_HASH for the local Bot API server}'
+    ports:
+      - '127.0.0.1:8081:8081'
+    volumes:
+      - type: bind
+        source: '${BOT_API_CACHE_DIR:?Set an absolute shared BOT_API_CACHE_DIR}'
+        target: '${BOT_API_CACHE_DIR:?Set an absolute shared BOT_API_CACHE_DIR}'
+    command:
+      - --local
+      - --http-port=8081
+      - '--dir=${BOT_API_CACHE_DIR:?Set an absolute shared BOT_API_CACHE_DIR}'
+    stop_grace_period: 60s

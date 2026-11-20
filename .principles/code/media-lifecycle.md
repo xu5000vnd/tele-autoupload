@@ -7,7 +7,9 @@
 - Claim stale/download work conditionally; keep ownership tokens on heartbeat, completion and failure writes.
 - Preserve a durable staged file and downloaded state when downstream handoff fails.
 - Preserve deleted-item guards in replay, stale recovery and queued downloads.
-- Keep terminal Telegram download failures distinct from retryable local staging failures.
+- Keep terminal deleted-item handling distinct from retryable Bot API, network and local staging failures.
+- Persist bot provenance, opaque album IDs and receipt revisions; reject an older receipt when a newer reference is stored. Fence bot download claim/completion with that revision and invalidate an active lease on a newer reference.
+- Use separate attempt directories with deterministic basenames so a stale attempt cannot overwrite newer bytes. Keep Bot API/network/local-copy failures retryable and preserve terminal deleted-item guards.
 
 ## Why
 

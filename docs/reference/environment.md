@@ -18,10 +18,10 @@ Quoted boolean defaults are parsed into booleans. "optional" means no schema def
 | `LOG_LEVEL` | `'info'` |
 | `LOG_DIR` | `'logs'` |
 | `LOG_RETENTION_DAYS` | `14` |
-| `TG_API_ID` | `required` |
-| `TG_API_HASH` | `required` |
-| `TG_SESSION_STRING` | `required` |
-| `TG_NUMBER` | `required` |
+| `TG_API_ID` | `optional; required by legacy capability` |
+| `TG_API_HASH` | `optional; required by legacy capability` |
+| `TG_SESSION_STRING` | `optional; required by legacy capability` |
+| `TG_NUMBER` | `optional; required by legacy capability` |
 | `TG_USE_WSS` | `'true'` |
 | `REDIS_URL` | `required` |
 | `DATABASE_URL` | `required` |
@@ -57,7 +57,12 @@ Quoted boolean defaults are parsed into booleans. "optional" means no schema def
 | `ADMIN_WEB_USERNAME` | `empty string` |
 | `ADMIN_WEB_PASSWORD` | `empty string` |
 | `STATS_RETENTION_DAYS` | `90` |
-| `BOT_TOKEN` | `optional` |
+| `BOT_TOKEN` | `required` |
+| `BOT_API_ROOT` | `'http://127.0.0.1:8081'` |
+| `BOT_API_CACHE_DIR` | `required` |
+| `BOT_POLL_TIMEOUT_SEC` | `20` |
+| `BOT_RECEIVER_LEASE_TTL_MS` | `60000` |
+| `LEGACY_TELEGRAM_ENABLED` | `'false'` |
 | `BOT_REPORT_CHAT_ID` | `optional` |
 | `UNREGISTERED_UPLOADER_USERNAME_WHITELIST` | `empty string` |
 | `DRIVE_ROOT_FOLDER_ID` | `optional` |
@@ -71,7 +76,10 @@ Quoted boolean defaults are parsed into booleans. "optional" means no schema def
 
 ## Validation and conditional requirements
 
-- TG_API_ID is a positive integer; TG_API_HASH, TG_SESSION_STRING and TG_NUMBER are nonempty strings.
+- The bot token and cache directory are required. BOT_API_ROOT is a URL. The downloader validates the cache and returned file realpaths and requires a shared absolute path from a local-mode API server.
+- LEGACY_TELEGRAM_ENABLED accepts the literal true/false and defaults to false. Enabling it requires positive TG_API_ID and nonempty TG_API_HASH, TG_SESSION_STRING and TG_NUMBER. It enables account campaigns, reminders and public-user lookup, never media scanning/download fallback.
+- The local API server separately requires application TG_API_ID/TG_API_HASH through [Compose](../../docker-compose.bot-api.yml); no human session or phone is needed by that server.
+- Poll timeout is 1 through 30 seconds. Receiver lease TTL is at least 45000 ms and must exceed the poll timeout plus 10 seconds. The receiver renews ownership during bounded requests.
 - REDIS_URL is a URL; DATABASE_URL and STAGING_DIR are nonempty strings.
 - UPLOAD_STRATEGY is drive_api, drive_desktop or playwright.
 - Drive API requires root folder ID, client ID, client secret and refresh token.
@@ -90,11 +98,13 @@ Quoted boolean defaults are parsed into booleans. "optional" means no schema def
 
 The whitelist parser accepts comma, semicolon or newline delimiters, removes leading @ characters and lowercases entries.
 It suppresses unknown-uploader notifications. In the desktop uploader's missing-user mapping path, confirmed sender matches are skipped, including bot identities.
-Resolution failure is cached for that uploader process lifetime; it does not grant authorization.
-RECONCILIATION_FROM skips older messages inside fetched pages while preserving page checkpoint behavior.
-RECONCILIATION_INTERVAL_MIN participates in due-window/stale calculations and budget validation; the actual Cron discrepancy is tracked in [status](../status.md).
+The uploader reads whitelist identities from registered users and observed messages for the current bot; it never resolves them through an account. Failed reads can retry and do not grant upload authorization.
+Bot updates are restricted to existing active group records or chats registered through user records; an explicitly inactive group alias blocks admission. Database registration does not add the bot to Telegram.
+History paging/overlap/from settings remain parsed for compatibility but do not enable bot history scanning. RECONCILIATION_INTERVAL_MIN participates in stale calculations and existing budget validation; the fixed Cron discrepancy is tracked in [status](../status.md).
+Captured updates have no automatic retention deletion. Keep the database and API cache on persistent storage and establish an operational retention policy before pruning either.
 STATS_RETENTION_DAYS is parsed but no daily_stats retention job is registered in the current implementation.
 TG_ALLOWED_CHAT_IDS, LOW_WATERMARK_PCT and STATS_REFRESH_INTERVAL_SEC from source plans are not base-schema fields.
+BOT_API_UID/BOT_API_GID are deployment-only Compose settings, defaulting to 1000/1000; match the downloader user's numeric IDs. They are not application schema fields.
 [Operations](operations.md) owns strategy completion and deployment procedures.
 
 ## Frontend development

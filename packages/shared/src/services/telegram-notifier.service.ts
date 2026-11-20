@@ -1,29 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import { Bot } from 'grammy';
+import { BotTelegramService } from '@shared/telegram/bot-telegram.service';
 import { appConfig } from '@shared/config/env';
 import { logger } from '@shared/utils/logger';
 
 @Injectable()
 export class TelegramNotifierService {
-  private readonly bot?: Bot;
-  private readonly reportChatId?: string;
-
-  constructor() {
-    if (!appConfig.botToken || !appConfig.botReportChatId) {
-      return;
-    }
-
-    this.bot = new Bot(appConfig.botToken);
-    this.reportChatId = appConfig.botReportChatId;
-  }
+  constructor(private readonly bot: BotTelegramService) {}
 
   async notify(text: string): Promise<void> {
-    if (!this.bot || !this.reportChatId) return;
+    if (!appConfig.botReportChatId) return;
 
     try {
-      await this.bot.api.sendMessage(this.reportChatId, text);
+      await this.bot.call('sendMessage', { chat_id: appConfig.botReportChatId, text });
     } catch (err) {
-      logger.error({ err, reportChatId: this.reportChatId }, 'failed to send bot notification');
+      logger.error({ err, reportChatId: appConfig.botReportChatId }, 'failed to send bot notification');
     }
   }
 }

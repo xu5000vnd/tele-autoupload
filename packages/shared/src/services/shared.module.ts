@@ -1,3 +1,5 @@
+import { BotTelegramService } from '@shared/telegram/bot-telegram.service';
+import { UploadSummaryService } from '@shared/services/upload-summary.service';
 import { Global, Module } from '@nestjs/common';
 import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
@@ -14,6 +16,8 @@ import { TelegramNotifierService } from '@shared/services/telegram-notifier.serv
 @Module({
   providers: [
     PrismaService,
+    BotTelegramService,
+    UploadSummaryService,
     QueueService,
     JobEventLogService,
     MediaService,
@@ -26,6 +30,8 @@ import { TelegramNotifierService } from '@shared/services/telegram-notifier.serv
   ],
   exports: [
     PrismaService,
+    BotTelegramService,
+    UploadSummaryService,
     QueueService,
     JobEventLogService,
     MediaService,

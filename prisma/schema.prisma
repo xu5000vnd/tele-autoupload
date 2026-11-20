@@ -13,6 +13,11 @@ enum ChatType {
   channel
 }
 
+enum MediaTransport {
+  legacy
+  bot
+}
+
 enum MediaType {
   photo
   video
@@ -96,6 +101,10 @@ model MediaItem {
   senderId         BigInt?        @map("sender_id")
   mediaType        MediaType      @map("media_type")
   mimeType         String?        @map("mime_type")
+  transport        MediaTransport @default(legacy)
+  botId            BigInt?        @map("bot_id")
+  albumId          String?        @map("album_id")
+  sourceRevision   BigInt         @default(0) @map("source_revision")
   tgFileId         String         @map("tg_file_id")
   tgFileUniqueId   String?        @map("tg_file_unique_id")
   fileName         String?        @map("file_name")
@@ -260,4 +269,48 @@ model ReminderScheduleRun {
   @@unique([scheduleId, runKey])
   @@index([scheduleId, createdAt])
   @@map("reminder_schedule_run")
+}
+
+model BotReceiverState {
+  botId         BigInt    @id @map("bot_id")
+  leaseToken    String?  @map("lease_token")
+  lastUpdateAt  DateTime @default(now()) @map("last_update_at")
+  nextOffset    Int       @default(0) @map("next_offset")
+  epoch         Int       @default(0)
+  lastPollAt    DateTime? @map("last_poll_at")
+  lastSuccessAt DateTime? @map("last_success_at")
+  lastError     String?  @map("last_error")
+  createdAt     DateTime @default(now()) @map("created_at")
+  @@map("bot_receiver_state")
+}
+
+model BotUpdateInbox {
+  id             BigInt   @id @default(autoincrement())
+  botId          BigInt   @map("bot_id")
+  epoch          Int      @default(0)
+  updateId       Int      @map("update_id")
+  payload        Json
+  chatId         BigInt?  @map("chat_id")
+  messageId      BigInt?  @map("message_id")
+  messageDate    DateTime? @map("message_date")
+  senderId       BigInt?  @map("sender_id")
+  senderUsername String?  @map("sender_username")
+  status         String   @default("pending")
+  attempts       Int      @default(0)
+  lastError      String?  @map("last_error")
+  nextAttemptAt  DateTime @default(now()) @map("next_attempt_at")
+  receivedAt     DateTime @default(now()) @map("received_at")
+  @@unique([botId, epoch, updateId])
+  @@index([botId, status, id])
+  @@index([botId, chatId, messageDate])
+  @@map("bot_update_inbox")
+}
+
+model BotChatCapture {
+  botId     BigInt   @map("bot_id")
+  chatId    BigInt   @map("chat_id")
+  membershipStatus String? @map("membership_status")
+  startedAt DateTime @default(now()) @map("started_at")
+  @@id([botId, chatId])
+  @@map("bot_chat_capture")
 }

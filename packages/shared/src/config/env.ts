@@ -16,10 +16,10 @@ const baseSchema = z.object({
   LOG_LEVEL: z.string().default('info'),
   LOG_DIR: z.string().default('logs'),
   LOG_RETENTION_DAYS: z.coerce.number().int().positive().default(14),
-  TG_API_ID: z.coerce.number().int().positive(),
-  TG_API_HASH: z.string().min(1),
-  TG_SESSION_STRING: z.string().min(1),
-  TG_NUMBER: z.string().min(1),
+  TG_API_ID: z.coerce.number().int().positive().optional(),
+  TG_API_HASH: z.string().optional(),
+  TG_SESSION_STRING: z.string().optional(),
+  TG_NUMBER: z.string().optional(),
   TG_USE_WSS: z.string().default('true').transform((value, ctx) => {
     const normalized = value.trim().toLowerCase();
     if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
@@ -72,7 +72,12 @@ const baseSchema = z.object({
   ADMIN_WEB_USERNAME: z.string().default(''),
   ADMIN_WEB_PASSWORD: z.string().default(''),
   STATS_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
-  BOT_TOKEN: z.string().optional(),
+  BOT_TOKEN: z.string().min(1),
+  BOT_API_ROOT: z.string().url().default('http://127.0.0.1:8081'),
+  BOT_API_CACHE_DIR: z.string().min(1),
+  BOT_POLL_TIMEOUT_SEC: z.coerce.number().int().min(1).max(30).default(20),
+  BOT_RECEIVER_LEASE_TTL_MS: z.coerce.number().int().min(45000).default(60000),
+  LEGACY_TELEGRAM_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   BOT_REPORT_CHAT_ID: z.string().optional(),
   UNREGISTERED_UPLOADER_USERNAME_WHITELIST: z.string().default(''),
   DRIVE_ROOT_FOLDER_ID: z.string().optional(),
@@ -144,7 +149,12 @@ export function parseEnv(): {
   adminWebUsername: string;
   adminWebPassword: string;
   statsRetentionDays: number;
-  botToken?: string;
+  botToken: string;
+  botApiRoot: string;
+  botApiCacheDir: string;
+  botPollTimeoutSec: number;
+  botReceiverLeaseTtlMs: number;
+  legacyTelegramEnabled: boolean;
   botReportChatId?: string;
   unregisteredUploaderUsernameWhitelist: string[];
   drive: {
@@ -159,6 +169,12 @@ export function parseEnv(): {
   };
 } {
   const env = baseSchema.parse(process.env);
+  if (env.LEGACY_TELEGRAM_ENABLED && (!env.TG_API_ID || !env.TG_API_HASH || !env.TG_SESSION_STRING || !env.TG_NUMBER)) {
+    throw new Error('LEGACY_TELEGRAM_ENABLED requires TG_API_ID, TG_API_HASH, TG_SESSION_STRING and TG_NUMBER');
+  }
+  if (env.BOT_RECEIVER_LEASE_TTL_MS <= (env.BOT_POLL_TIMEOUT_SEC + 10) * 1000) {
+    throw new Error('BOT_RECEIVER_LEASE_TTL_MS must exceed the polling timeout plus 10 seconds');
+  }
 
   if (env.UPLOAD_STRATEGY === 'drive_api') {
     if (!env.DRIVE_ROOT_FOLDER_ID || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) {
@@ -196,10 +212,10 @@ export function parseEnv(): {
     logDir: env.LOG_DIR,
     logRetentionDays: env.LOG_RETENTION_DAYS,
     telegram: {
-      apiId: env.TG_API_ID,
-      apiHash: env.TG_API_HASH,
-      session: env.TG_SESSION_STRING,
-      phoneNumber: env.TG_NUMBER,
+      apiId: env.TG_API_ID ?? 1,
+      apiHash: env.TG_API_HASH ?? '',
+      session: env.TG_SESSION_STRING ?? '',
+      phoneNumber: env.TG_NUMBER ?? '',
       useWss: env.TG_USE_WSS,
     },
     redisUrl: env.REDIS_URL,
@@ -239,6 +255,11 @@ export function parseEnv(): {
     adminWebPassword: env.ADMIN_WEB_PASSWORD,
     statsRetentionDays: env.STATS_RETENTION_DAYS,
     botToken: env.BOT_TOKEN,
+    botApiRoot: env.BOT_API_ROOT.replace(/\/$/, ''),
+    botApiCacheDir: env.BOT_API_CACHE_DIR,
+    botPollTimeoutSec: env.BOT_POLL_TIMEOUT_SEC,
+    botReceiverLeaseTtlMs: env.BOT_RECEIVER_LEASE_TTL_MS,
+    legacyTelegramEnabled: env.LEGACY_TELEGRAM_ENABLED,
     botReportChatId: env.BOT_REPORT_CHAT_ID,
     unregisteredUploaderUsernameWhitelist: parseUsernameWhitelist(env.UNREGISTERED_UPLOADER_USERNAME_WHITELIST),
     drive: {

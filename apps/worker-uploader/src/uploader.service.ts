@@ -11,7 +11,7 @@ import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
 import { JobEventLogService } from '@shared/services/job-event-log.service';
 import { TelegramNotifierService } from '@shared/services/telegram-notifier.service';
-import { TelegramGateway } from '@shared/telegram/telegram-gateway';
+import { BotTelegramService } from '@shared/telegram/bot-telegram.service';
 import { UploadJobPayload } from '@shared/types/jobs';
 import { logger } from '@shared/utils/logger';
 import { FolderResolverService } from './folder-resolver.service';
@@ -26,7 +26,6 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     failed: number;
     errors: Map<string, number>;
   }>();
-  private whitelistedSenderIds?: Promise<Set<string> | null>;
 
   constructor(
     private readonly queueService: QueueService,
@@ -35,7 +34,7 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     private readonly uploaderFactory: UploaderFactoryService,
     private readonly folderResolverService: FolderResolverService,
     private readonly telegramNotifier: TelegramNotifierService,
-    private readonly telegramGateway: TelegramGateway,
+    private readonly botTelegram: BotTelegramService,
   ) {}
 
   onModuleInit(): void {
@@ -51,9 +50,6 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     if (this.worker) {
       await this.worker.close();
     }
-    if (this.whitelistedSenderIds) {
-      await this.telegramGateway.disconnect();
-    }
   }
 
   private async processJob(job: Job<UploadJobPayload>): Promise<void> {
@@ -63,6 +59,11 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (item.status === MediaStatus.skipped || (item.status === MediaStatus.uploaded && item.driveFileId)) {
+      return;
+    }
+    // An edit can invalidate staging after this upload job was queued.
+    const retryableUpload = item.status === MediaStatus.failed && !!item.localPath;
+    if (item.transport === 'bot' && item.status !== MediaStatus.downloaded && item.status !== MediaStatus.uploading && !retryableUpload) {
       return;
     }
     const userTu = item.senderId
@@ -90,10 +91,18 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    await this.prisma.mediaItem.update({
-      where: { id: item.id },
-      data: { status: MediaStatus.uploading, updatedAt: new Date() },
-    });
+    if (item.transport === 'bot') {
+      const claim = await this.prisma.mediaItem.updateMany({
+        where: { id: item.id, status: item.status, sourceRevision: item.sourceRevision, updatedAt: item.updatedAt },
+        data: { status: MediaStatus.uploading, updatedAt: new Date() },
+      });
+      if (claim.count !== 1) return;
+    } else {
+      await this.prisma.mediaItem.update({
+        where: { id: item.id },
+        data: { status: MediaStatus.uploading, updatedAt: new Date() },
+      });
+    }
 
     await this.eventLogService.log(item.id, JobEventType.upload_start, { attempt: job.attemptsMade + 1 });
 
@@ -178,6 +187,8 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
 
     if (item.localPath) {
       await fs.rm(item.localPath, { force: true });
+      if (item.transport === 'bot') await fs.rmdir(path.dirname(item.localPath)).catch(() => undefined);
+      if (item.transport === 'bot') await fs.rmdir(path.dirname(path.dirname(item.localPath))).catch(() => undefined);
     }
   }
 
@@ -315,20 +326,18 @@ export class UploaderService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveWhitelistedSenderIds(): Promise<Set<string> | null> {
-    return this.whitelistedSenderIds ??= this.loadWhitelistedSenderIds();
-  }
-
-  private async loadWhitelistedSenderIds(): Promise<Set<string> | null> {
     try {
-      await this.telegramGateway.connect({ withUpdates: false });
-      const resolvedUsers = await Promise.all(
-        appConfig.unregisteredUploaderUsernameWhitelist.map((username) =>
-          this.telegramGateway.resolvePublicUserOrBotUsername(username),
-        ),
-      );
-      return new Set(resolvedUsers.map((user) => user.telegramUserId.toString()));
+      const me = await this.botTelegram.getMe();
+      const usernames = appConfig.unregisteredUploaderUsernameWhitelist;
+      const [users, observed] = await Promise.all([
+        this.prisma.userTu.findMany({ where: { username: { in: usernames } }, select: { telegramUserId: true } }),
+        this.prisma.botUpdateInbox.findMany({ where: { botId: BigInt(me.id), senderUsername: { in: usernames }, senderId: { not: null } }, select: { senderId: true } }),
+      ]);
+      return new Set([...users.map((user) => user.telegramUserId.toString()),
+        ...observed.flatMap((row) => row.senderId ? [row.senderId.toString()] : []),
+        ...(me.username && usernames.includes(me.username.toLowerCase()) ? [String(me.id)] : [])]);
     } catch (err) {
-      logger.warn({ err }, 'could not resolve unregistered uploader whitelist usernames');
+      logger.warn({ err }, 'could not read observed whitelist identities; retry on next attempt');
       return null;
     }
   }

@@ -9,8 +9,7 @@ vi.mock('@shared/utils/logger', () => ({
 }));
 
 describe('DownloaderService', () => {
-  it('connects without updates, wires download work, and shuts down cleanly', async () => {
-    const context = { requestGate: {} };
+  it('runs bot download work without an account connection and shuts down cleanly', async () => {
     const worker = {
       on: vi.fn(),
       close: vi.fn().mockResolvedValue(undefined),
@@ -29,21 +28,13 @@ describe('DownloaderService', () => {
     const mediaService = {
       downloadMediaItem: vi.fn().mockResolvedValue(undefined),
     };
-    const telegramGateway = {
-      connect: vi.fn().mockResolvedValue(undefined),
-      createReconciliationContext: vi.fn().mockReturnValue(context),
-      disconnect: vi.fn().mockResolvedValue(undefined),
-    };
     const service = new DownloaderService(
       queueService as never,
       mediaService as never,
-      telegramGateway as never,
     );
 
     await service.onModuleInit();
 
-    expect(telegramGateway.connect).toHaveBeenCalledWith({ withUpdates: false });
-    expect(telegramGateway.createReconciliationContext).toHaveBeenCalledOnce();
     expect(queueService.createDownloadWorker).toHaveBeenCalledOnce();
     expect(worker.on).toHaveBeenCalledWith('failed', expect.any(Function));
 
@@ -53,7 +44,7 @@ describe('DownloaderService', () => {
       opts: { attempts: 3 },
     });
 
-    expect(mediaService.downloadMediaItem).toHaveBeenCalledWith('media-1', context, {
+    expect(mediaService.downloadMediaItem).toHaveBeenCalledWith('media-1', {
       attemptsMade: 2,
       maxAttempts: 3,
     });
@@ -61,6 +52,5 @@ describe('DownloaderService', () => {
     await service.onModuleDestroy();
 
     expect(worker.close).toHaveBeenCalledOnce();
-    expect(telegramGateway.disconnect).toHaveBeenCalledOnce();
   });
 });

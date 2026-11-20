@@ -13,7 +13,7 @@
           class="btn-link"
           :to="{ path: '/backfill', query: { chat_id: detail.user.telegram_chat_id } }"
         >
-          Backfill
+          Replay
         </RouterLink>
         <button class="btn-secondary" :disabled="loading" type="button" @click="loadDetail">
           {{ loading ? 'Loading...' : 'Reload' }}
@@ -92,7 +92,7 @@
               <span class="muted">{{ item.pending_count }} pending</span>
             </div>
             <div class="history-action">
-              <button type="button" @click="openBackfillModal(item)">Backfill</button>
+              <button type="button" @click="openBackfillModal(item)">Replay</button>
             </div>
           </article>
         </div>
@@ -105,7 +105,7 @@
         <section class="modal-card">
           <div class="modal-heading">
             <div>
-              <h3>Backfill Media</h3>
+              <h3>Replay Captured Media</h3>
               <div class="muted">Scan Telegram history for this group and date.</div>
             </div>
             <button class="btn-secondary icon-button" type="button" aria-label="Close" @click="closeBackfillModal">
@@ -133,6 +133,8 @@
             </label>
           </div>
 
+          <p v-if="backfillResult" class="muted">{{ backfillResult.coverage_note }} Coverage: {{ backfillResult.coverage }}.
+            Capture started: {{ backfillResult.capture_started_at || 'not available' }}.</p>
           <div v-if="backfillResult" class="backfill-result">
             <div>
               <strong>{{ backfillResult.selected_users.length }}</strong>
@@ -166,7 +168,7 @@
               {{ backfillSubmitting && backfillAction === 'preview' ? 'Previewing...' : 'Preview' }}
             </button>
             <button :disabled="backfillSubmitting" type="button" @click="submitBackfill(false)">
-              {{ backfillSubmitting && backfillAction === 'run' ? 'Running...' : 'Run Backfill' }}
+              {{ backfillSubmitting && backfillAction === 'run' ? 'Running...' : 'Run Replay' }}
             </button>
           </div>
         </section>
@@ -272,7 +274,7 @@ async function submitBackfill(dryRun: boolean): Promise<void> {
     });
     backfillSuccess.value = dryRun
       ? 'Preview completed. No media was queued or retried.'
-      : `Backfill completed. Queued ${backfillResult.value.queued_media} new and retried ${backfillResult.value.retried_failed} failed media item(s).`;
+      : `Replay completed. Queued ${backfillResult.value.queued_media} new and retried ${backfillResult.value.retried_failed} failed media item(s).`;
   } catch (err) {
     backfillError.value = err instanceof Error ? err.message : String(err);
   } finally {

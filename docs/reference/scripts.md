@@ -48,7 +48,7 @@ The backend build emits application/shared TypeScript and excludes tests and web
 The frontend build runs vue-tsc followed by Vite using its [own configuration](../../apps/web-admin/tsconfig.json).
 Vitest selects root tests/**/*.spec.ts and resolves the shared alias using [vitest.config.ts](../../vitest.config.ts).
 There is no lint script in either manifest and no tracked lint/CI configuration in this checkout.
-Tests importing appConfig can depend on environment values at import time; the canonical clean-checkout fixture is [to confirm](../status.md#waiting-for-a-decision).
+Tests importing appConfig parse configuration at import time. [Vitest](../../vitest.config.ts) supplies dummy bot, database, Redis, staging and desktop-strategy settings so the suite does not need production credentials; environment-specific cases extend/reset their own values.
 
 ## Documentation checks
 

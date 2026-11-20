@@ -255,6 +255,10 @@ export type MediaBackfillRequest = {
 };
 
 export type MediaBackfillResult = {
+  source: 'bot_inbox';
+  capture_started_at: string | null;
+  coverage: 'unavailable' | 'partial' | 'captured';
+  coverage_note: string;
   dry_run: boolean;
   chat_id: string;
   from_date: string;

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { appConfig } from '@shared/config/env';
 import { Cron } from '@nestjs/schedule';
 import { MediaStatus, UserTuStatus } from '@prisma/client';
 import { PrismaService } from '@shared/db/prisma.service';
@@ -135,6 +136,7 @@ export class ReminderSchedulesService {
   }
 
   async runNow(id: number): Promise<Record<string, unknown>> {
+    if (!appConfig.legacyTelegramEnabled) throw new ServiceUnavailableException('Account reminders are disabled');
     this.assertScheduleStorage();
     const schedule = await this.prismaAny.reminderSchedule.findUnique({ where: { id } });
     if (!schedule) {
@@ -146,6 +148,7 @@ export class ReminderSchedulesService {
 
   @Cron('* * * * *')
   async runDueSchedules(): Promise<void> {
+    if (!appConfig.legacyTelegramEnabled) return;
     if (!this.hasScheduleStorage()) {
       return;
     }

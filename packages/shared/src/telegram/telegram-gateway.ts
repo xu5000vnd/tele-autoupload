@@ -235,6 +235,7 @@ export class TelegramGateway {
 
   // Connection for ingest or outbound send. `withUpdates=true` registers update handlers.
   async connect(options: { withUpdates?: boolean } = {}): Promise<void> {
+    if (!appConfig.legacyTelegramEnabled) throw new Error('Legacy Telegram account access is disabled');
     const withUpdates = options.withUpdates ?? true;
 
     if (!this.client?.connected) {

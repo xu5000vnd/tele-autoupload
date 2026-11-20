@@ -1,5 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { MediaStatus, UserTuStatus } from '@prisma/client';
+import { BotTelegramService } from '@shared/telegram/bot-telegram.service';
+import { UploadSummaryService } from '@shared/services/upload-summary.service';
 import { appConfig } from '@shared/config/env';
 import { PrismaService } from '@shared/db/prisma.service';
 import { QueueService } from '@shared/queue/queue.service';
@@ -57,6 +59,8 @@ export class StatsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
+    private readonly summary: UploadSummaryService,
+    private readonly botTelegram: BotTelegramService,
   ) {}
 
   private get prismaAny(): any {
@@ -280,7 +284,7 @@ export class StatsService {
 
     return {
       uptime_seconds: Math.floor(process.uptime()),
-      telegram_connected: true,
+      telegram_connected: (await this.botTelegram.readiness()).ready,
       queues: {
         upload: uploadCounts,
       },
@@ -329,71 +333,24 @@ export class StatsService {
     void dbOk;
     void redisOk;
 
-    const degraded = staging.usedPct >= appConfig.highWatermarkPct;
+    const telegram = await this.botTelegram.readiness();
+    const diskWarning = staging.usedPct >= appConfig.highWatermarkPct;
+    const degraded = diskWarning || !telegram.ready;
 
     return {
       status: degraded ? 'degraded' : 'healthy',
       checks: {
+        telegram,
         postgres: { status: 'up' },
         redis: { status: 'up' },
-        staging_disk: { status: degraded ? 'warning' : 'ok', used_pct: Number(staging.usedPct.toFixed(2)) },
+        staging_disk: { status: diskWarning ? 'warning' : 'ok', used_pct: Number(staging.usedPct.toFixed(2)) },
       },
       started_at: new Date(Date.now() - process.uptime() * 1000).toISOString(),
     };
   }
 
   async today(dateStr?: string): Promise<Record<string, unknown>[]> {
-    const targetDate = dateStr ?? new Date().toISOString().slice(0, 10);
-    const dayStart = new Date(`${targetDate}T00:00:00.000Z`);
-    const dayEnd = new Date(`${targetDate}T23:59:59.999Z`);
-
-    const [users, counts] = await Promise.all([
-      this.prisma.userTu.findMany({ where: { status: 'active' } }),
-      this.prisma.mediaItem.groupBy({
-        by: ['senderId', 'chatId', 'mediaType', 'status'],
-        where: { date: { gte: dayStart, lte: dayEnd } },
-        _count: { id: true },
-      }),
-    ]);
-
-    type Bucket = { photo: number; video: number; success: number; failed: number };
-    const countMap = new Map<string, Bucket>();
-
-    for (const row of counts) {
-      if (!row.senderId) continue;
-      const key = `${row.senderId}_${row.chatId}`;
-      if (!countMap.has(key)) countMap.set(key, { photo: 0, video: 0, success: 0, failed: 0 });
-      const bucket = countMap.get(key)!;
-      const count = row._count.id;
-
-      if (row.mediaType === 'photo') bucket.photo += count;
-      if (row.mediaType === 'video') bucket.video += count;
-      if (row.status === 'uploaded') bucket.success += count;
-      if (row.status === 'failed') bucket.failed += count;
-    }
-
-    return users.map((user) => {
-      const key = `${user.telegramUserId}_${user.telegramChatId}`;
-      const bucket = countMap.get(key) ?? { photo: 0, video: 0, success: 0, failed: 0 };
-      return {
-        tu_id: user.tuId,
-        tu_name: user.tuName,
-        path: user.path ?? null,
-        telegram_user_id: user.telegramUserId.toString(),
-        telegram_username: user.username ?? null,
-        telegram_chat_id: user.telegramChatId.toString(),
-        media: {
-          image: bucket.photo,
-          video: bucket.video,
-          total: bucket.photo + bucket.video,
-        },
-        status_uploaded: {
-          success: bucket.success,
-          failed: bucket.failed,
-        },
-        date: targetDate,
-      };
-    });
+    return this.summary.today(dateStr);
   }
 
   async monthlyHeatmap(yearRaw?: string): Promise<Record<string, unknown>> {
@@ -878,13 +835,14 @@ export class StatsService {
     }
 
     const totalReceived = Array.from(statusCounts.values()).reduce((acc, count) => acc + count, 0);
+    const telegram = await this.botTelegram.readiness();
 
     return {
       generated_at: new Date().toISOString(),
       health: {
-        status: staging.usedPct >= appConfig.highWatermarkPct ? 'degraded' : 'healthy',
+        status: staging.usedPct >= appConfig.highWatermarkPct || !telegram.ready ? 'degraded' : 'healthy',
         uptime_seconds: Math.floor(process.uptime()),
-        telegram_connected: true,
+        telegram_connected: telegram.ready,
         queues: {
           upload: uploadCounts,
         },

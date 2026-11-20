@@ -43,20 +43,16 @@ describe('UploaderService whitelisted admin media', () => {
       mediaItem: {
         findUnique: vi.fn().mockResolvedValue(item),
         update: vi.fn().mockResolvedValue(item),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         findMany: vi.fn().mockResolvedValue([]),
       },
-      userTu: { findFirst: vi.fn().mockResolvedValue(null) },
+      userTu: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]) },
+      botUpdateInbox: { findMany: vi.fn().mockResolvedValue((input.resolvedIds ?? [42n]).map((senderId) => ({ senderId }))) },
       groupState: { findUnique: vi.fn().mockResolvedValue(null) },
     };
     const eventLogService = { log: vi.fn().mockResolvedValue(undefined) };
     const strategy = { ensureDestination: vi.fn(), upload: vi.fn() };
-    const telegramGateway = {
-      connect: vi.fn().mockResolvedValue(undefined),
-      resolvePublicUserOrBotUsername: vi.fn().mockImplementation(async () => ({
-        telegramUserId: input.resolvedIds?.shift() ?? 42n,
-        isBot: false,
-      })),
-    };
+    const botTelegram = { getMe: vi.fn().mockResolvedValue({ id: 7, username: 'upload_bot' }) };
     const service = new UploaderService(
       { createUploadWorker: vi.fn() } as never,
       prisma as never,
@@ -64,10 +60,10 @@ describe('UploaderService whitelisted admin media', () => {
       { getStrategy: vi.fn().mockReturnValue(strategy) } as never,
       { rememberDateFolder: vi.fn() } as never,
       { notify: vi.fn() } as never,
-      telegramGateway as never,
+      botTelegram as never,
     );
 
-    return { eventLogService, prisma, service, strategy, telegramGateway };
+    return { eventLogService, prisma, service, strategy, botTelegram };
   }
 
   async function process(service: UploaderService, mediaItemId = 'media-1'): Promise<void> {
@@ -77,17 +73,16 @@ describe('UploaderService whitelisted admin media', () => {
     });
   }
 
-  it('skips a missing mapping when a configured username resolves to the sender, including bots', async () => {
+  it('skips missing mappings using bot-scoped observed sender identities', async () => {
     appConfig.unregisteredUploaderUsernameWhitelist = ['admin_bot'];
-    const { eventLogService, prisma, service, strategy, telegramGateway } = createService({
+    const { eventLogService, prisma, service, strategy, botTelegram } = createService({
       resolvedIds: [42n],
     });
-    telegramGateway.resolvePublicUserOrBotUsername.mockResolvedValue({ telegramUserId: 42n, isBot: true });
 
     await process(service);
 
-    expect(telegramGateway.connect).toHaveBeenCalledWith({ withUpdates: false });
-    expect(telegramGateway.resolvePublicUserOrBotUsername).toHaveBeenCalledWith('admin_bot');
+    expect(botTelegram.getMe).toHaveBeenCalledOnce();
+    expect(prisma.botUpdateInbox.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ botId: 7n, senderUsername: { in: ['admin_bot'] } }) }));
     expect(prisma.mediaItem.update).toHaveBeenCalledWith({
       where: { id: 'media-1' },
       data: expect.objectContaining({
@@ -107,13 +102,13 @@ describe('UploaderService whitelisted admin media', () => {
 
   it('preserves a missing user_tu failure when no configured username matches the sender', async () => {
     appConfig.unregisteredUploaderUsernameWhitelist = ['admin'];
-    const { eventLogService, prisma, service, telegramGateway } = createService({
+    const { eventLogService, prisma, service, botTelegram } = createService({
       resolvedIds: [99n],
     });
 
     await expect(process(service)).rejects.toThrow('Missing user_tu row for media item media-1');
 
-    expect(telegramGateway.resolvePublicUserOrBotUsername).toHaveBeenCalledWith('admin');
+    expect(botTelegram.getMe).toHaveBeenCalled();
     expect(prisma.mediaItem.update).not.toHaveBeenCalled();
     expect(eventLogService.log).not.toHaveBeenCalled();
   });
@@ -132,39 +127,63 @@ describe('UploaderService whitelisted admin media', () => {
   });
 
   it('does not connect to Telegram when the username whitelist is empty', async () => {
-    const { service, telegramGateway } = createService();
+    const { service, botTelegram } = createService();
 
     await expect(process(service)).rejects.toThrow('Missing user_tu row for media item media-1');
 
-    expect(telegramGateway.connect).not.toHaveBeenCalled();
-    expect(telegramGateway.resolvePublicUserOrBotUsername).not.toHaveBeenCalled();
+    expect(botTelegram.getMe).not.toHaveBeenCalled();
+  });
+
+  it('does not upload an old queued path after a bot edit invalidates staging', async () => {
+    const { service, prisma, strategy } = createService({ item: { id: 'media-1', transport: 'bot', status: MediaStatus.queued, localPath: null } });
+    await process(service);
+    expect(prisma.mediaItem.updateMany).not.toHaveBeenCalled();
+    expect(strategy.upload).not.toHaveBeenCalled();
+  });
+
+  it('abandons a bot upload when an edit changes the slot before its claim', async () => {
+    const { service, prisma, strategy } = createService({ item: { id: 'media-1', senderId: 42n, chatId: -1001234567890n,
+      transport: 'bot', sourceRevision: 1n, status: MediaStatus.downloaded, localPath: '/tmp/staged.jpg' } });
+    prisma.userTu.findFirst.mockResolvedValue({ id: 1, tuId: 'tu1', path: 'fixture', tuName: 'Fixture' } as never);
+    vi.spyOn(service as any, 'resolveDesktopUserPath').mockResolvedValue('fixture');
+    prisma.mediaItem.updateMany.mockResolvedValue({ count: 0 });
+    await process(service);
+    expect(strategy.upload).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed bot upload using its retained staged artifact', async () => {
+    const { service, prisma, strategy } = createService({ item: { id: 'media-1', senderId: 42n, chatId: -1001234567890n, messageId: 17n, date: new Date(),
+      transport: 'bot', sourceRevision: 1n, status: MediaStatus.failed, localPath: '/tmp/staged.jpg' } });
+    prisma.userTu.findFirst.mockResolvedValue({ id: 1, tuId: 'tu1', path: 'fixture', tuName: 'Fixture' } as never);
+    vi.spyOn(service as any, 'resolveDesktopUserPath').mockResolvedValue('fixture');
+    strategy.ensureDestination.mockResolvedValue({ folderId: 'destination', folderPath: '/tmp/destination' });
+    strategy.upload.mockRejectedValue(new Error('retry reached upload transport'));
+    await expect(process(service)).rejects.toThrow('retry reached upload transport');
+    expect(strategy.upload).toHaveBeenCalledOnce();
   });
 
   it('fails closed when the configured whitelist cannot be fully resolved', async () => {
     appConfig.unregisteredUploaderUsernameWhitelist = ['admin', 'unavailable'];
-    const { prisma, service, telegramGateway } = createService({ resolvedIds: [42n] });
-    telegramGateway.resolvePublicUserOrBotUsername
-      .mockResolvedValueOnce({ telegramUserId: 42n, isBot: false })
-      .mockRejectedValueOnce(new Error('USERNAME_NOT_OCCUPIED'));
+    const { prisma, service, botTelegram } = createService({ resolvedIds: [42n] });
+    botTelegram.getMe.mockRejectedValue(new Error('Local API unavailable'));
 
     await expect(process(service)).rejects.toThrow('Missing user_tu row for media item media-1');
 
     expect(prisma.mediaItem.update).not.toHaveBeenCalled();
   });
 
-  it('caches an unavailable whitelist lookup for the uploader lifetime', async () => {
+  it('retries an unavailable bot identity instead of caching failure', async () => {
     appConfig.unregisteredUploaderUsernameWhitelist = ['unavailable'];
-    const { service, telegramGateway } = createService();
-    telegramGateway.resolvePublicUserOrBotUsername.mockRejectedValue(new Error('USERNAME_NOT_OCCUPIED'));
+    const { service, botTelegram } = createService();
+    botTelegram.getMe.mockRejectedValue(new Error('Local API unavailable'));
 
     await expect(process(service)).rejects.toThrow('Missing user_tu row for media item media-1');
     await expect(process(service)).rejects.toThrow('Missing user_tu row for media item media-1');
 
-    expect(telegramGateway.connect).toHaveBeenCalledOnce();
-    expect(telegramGateway.resolvePublicUserOrBotUsername).toHaveBeenCalledOnce();
+    expect(botTelegram.getMe).toHaveBeenCalledTimes(2);
   });
 
-  it('resolves the configured whitelist once per uploader process', async () => {
+  it('refreshes observed whitelist identities for following jobs', async () => {
     appConfig.unregisteredUploaderUsernameWhitelist = ['admin'];
     const firstItem = {
       id: 'media-1',
@@ -177,14 +196,13 @@ describe('UploaderService whitelisted admin media', () => {
       mimeType: 'image/jpeg',
     };
     const secondItem = { ...firstItem, id: 'media-2', messageId: 18n, localPath: '/tmp/second.jpg' };
-    const { service, prisma, telegramGateway } = createService({ item: firstItem, resolvedIds: [42n] });
+    const { service, prisma, botTelegram } = createService({ item: firstItem, resolvedIds: [42n] });
     prisma.mediaItem.findUnique.mockResolvedValueOnce(firstItem).mockResolvedValueOnce(secondItem);
 
     await process(service, 'media-1');
     await process(service, 'media-2');
 
-    expect(telegramGateway.connect).toHaveBeenCalledOnce();
-    expect(telegramGateway.resolvePublicUserOrBotUsername).toHaveBeenCalledOnce();
+    expect(botTelegram.getMe).toHaveBeenCalledTimes(2);
   });
 
   it('cleans retained staging files for skipped media on the normal cleanup schedule', async () => {

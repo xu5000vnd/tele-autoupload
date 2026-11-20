@@ -1,7 +1,8 @@
 import { BadRequestException, HttpException, NotFoundException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import bigInt from 'big-integer';
 import { Api } from 'telegram';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { appConfig } from '@shared/config/env';
 import { MessagesService } from '../apps/stats-api/src/messages.service';
 import {
   TelegramGateway,
@@ -98,6 +99,9 @@ describe('TelegramGateway username resolution', () => {
 });
 
 describe('MessagesService username resolution', () => {
+  const original = appConfig.legacyTelegramEnabled;
+  beforeEach(() => { appConfig.legacyTelegramEnabled = true; });
+  afterEach(() => { appConfig.legacyTelegramEnabled = original; });
   function createService(resolvePublicUserUsername: ReturnType<typeof vi.fn>): MessagesService {
     return new MessagesService(
       {} as never,
@@ -134,4 +138,17 @@ describe('MessagesService username resolution', () => {
       return exception.getStatus() === status && responseMessage === message;
     });
   });
+  it('blocks disabled account operations before resolving or writing a campaign', async () => {
+    appConfig.legacyTelegramEnabled = false;
+    const gateway = { connect: vi.fn(), resolvePublicUserUsername: vi.fn() };
+    const prisma = { messageCampaign: { create: vi.fn() } };
+    const service = new MessagesService(prisma as never, gateway as never);
+    await service.onModuleInit();
+    await expect(service.resolveTargetUsername('alice')).rejects.toThrow('disabled');
+    await expect(service.createCampaign({ targetIds: [1], body: 'Hello' })).rejects.toThrow('disabled');
+    expect(gateway.connect).not.toHaveBeenCalled();
+    expect(gateway.resolvePublicUserUsername).not.toHaveBeenCalled();
+    expect(prisma.messageCampaign.create).not.toHaveBeenCalled();
+  });
+
 });

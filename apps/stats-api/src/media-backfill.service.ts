@@ -2,7 +2,8 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { MediaStatus, UserTu, UserTuStatus } from '@prisma/client';
 import { PrismaService } from '@shared/db/prisma.service';
 import { MediaService, ResolvedUploaderContext } from '@shared/services/media.service';
-import { TelegramGateway } from '@shared/telegram/telegram-gateway';
+import { BotTelegramService, parseBotMedia, chatIdAliases } from '@shared/telegram/bot-telegram.service';
+import { Update } from 'grammy/types';
 import { IncomingMessage } from '@shared/types/telegram';
 
 type BackfillInput = {
@@ -31,8 +32,8 @@ type MediaScanSummary = {
 export class MediaBackfillService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly telegramGateway: TelegramGateway,
     private readonly mediaService: MediaService,
+    private readonly botTelegram: BotTelegramService,
   ) {}
 
   async backfill(input: BackfillInput): Promise<Record<string, unknown>> {
@@ -54,14 +55,19 @@ export class MediaBackfillService {
       throw new BadRequestException('no active users found in this group');
     }
 
-    await this.telegramGateway.connect({ withUpdates: false });
-    const fetched = await this.telegramGateway.fetchHistoryAfter({
-      chatId: input.chatId,
-      afterMessageId: 0n,
-    });
-    const messages = fetched.messages.filter((message) => (
-      message.date >= input.fromDate && message.date <= input.toDate
-    ));
+    if (!await this.botTelegram.isConfiguredChat(input.chatId)) throw new BadRequestException('group is not an active configured source');
+    const botId = BigInt((await this.botTelegram.getMe()).id);
+    const [rows, capture] = await Promise.all([
+      this.prisma.botUpdateInbox.findMany({ where: { botId, chatId: { in: chatAliases }, messageDate: { gte: input.fromDate, lte: input.toDate } }, orderBy: { id: 'asc' } }),
+      this.prisma.botChatCapture.findFirst({ where: { botId, chatId: { in: chatAliases } }, orderBy: { startedAt: 'asc' } }),
+    ]);
+    const latest = new Map<string, IncomingMessage>();
+    for (const row of rows) {
+      const message = parseBotMedia(row.payload as unknown as Update, botId, row.id);
+      if (message) latest.set(`${message.chatId}:${message.messageId}`, message);
+    }
+    const messages = [...latest.values()].sort((a, b) => a.sourceRevision! < b.sourceRevision! ? -1 : 1);
+    const coverage = !capture || input.toDate < capture.startedAt ? 'unavailable' : input.fromDate < capture.startedAt ? 'partial' : 'captured';
 
     const userBySenderKey = new Map<string, BackfillUser>();
     const userByUsernameKey = new Map<string, BackfillUser>();
@@ -96,16 +102,20 @@ export class MediaBackfillService {
       retriedFailed += mediaScan.failed;
       skippedExisting += mediaScan.existing;
 
-      if ((!mediaScan.missing && !mediaScan.failed) || input.dryRun) {
+      if (input.dryRun) {
         continue;
       }
 
       const patchedUser = await this.patchUserIdentifiers(matchedUser, message);
-      await this.mediaService.processIncomingMessage(message, this.uploaderContext(patchedUser));
+      await this.mediaService.processIncomingMessage(message, this.uploaderContext(patchedUser), { manageGroupCursor: false });
       processedMessages += 1;
     }
 
     return {
+      source: 'bot_inbox',
+      capture_started_at: capture?.startedAt.toISOString() ?? null,
+      coverage,
+      coverage_note: 'Only messages captured by this bot are available. Telegram history and expired undelivered updates are unavailable.',
       dry_run: input.dryRun,
       chat_id: input.chatId.toString(),
       from_date: input.fromDate.toISOString(),
@@ -126,7 +136,7 @@ export class MediaBackfillService {
       skipped_existing: skippedExisting,
       unknown_senders: [...unknownSenders.values()],
       processed_messages: processedMessages,
-      max_seen_message_id: fetched.maxSeenMessageId.toString(),
+      max_seen_message_id: messages.reduce((max, message) => message.messageId > max ? message.messageId : max, 0n).toString(),
     };
   }
 
@@ -248,40 +258,6 @@ export class MediaBackfillService {
   }
 
   private chatIdLookupAliases(chatId: bigint): bigint[] {
-    const values = new Map<string, bigint>();
-    const add = (id: bigint): void => {
-      values.set(id.toString(), id);
-    };
-
-    add(chatId);
-    if (chatId >= 0n) {
-      return [...values.values()];
-    }
-
-    const positiveId = -chatId;
-    if (positiveId > 1_000_000_000_000n) {
-      const channelId = positiveId - 1_000_000_000_000n;
-      add(-channelId);
-      add(BigInt(`-100${channelId.toString()}`));
-      return [...values.values()];
-    }
-
-    if (positiveId > 2_147_483_647n) {
-      const channelId = positiveId;
-      add(-(1_000_000_000_000n + channelId));
-      add(BigInt(`-100${channelId.toString()}`));
-      return [...values.values()];
-    }
-
-    const asText = positiveId.toString();
-    if (asText.startsWith('100') && asText.length > 3) {
-      const channelId = BigInt(asText.slice(3));
-      if (channelId > 0n) {
-        add(-(1_000_000_000_000n + channelId));
-        add(-channelId);
-      }
-    }
-
-    return [...values.values()];
+    return chatIdAliases(chatId);
   }
 }
